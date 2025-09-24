@@ -35,23 +35,50 @@ void pop_off(void)
 // 自选锁初始化
 void spinlock_init(spinlock_t *lk, char *name)
 {
-
+    lk->locked = 0;
+    lk->name = name;
+    lk->cpuid = -1;
 }
 
 // 是否持有自旋锁
 bool spinlock_holding(spinlock_t *lk)
 {
-
+    int r;
+    push_off();
+    r = lk->locked && lk->cpuid == mycpuid();
+    pop_off();
+    return r;
 }
 
 // 获取自选锁
 void spinlock_acquire(spinlock_t *lk)
 {
-
+    push_off();
+    
+    // 检查是否已经持有锁
+    if (spinlock_holding(lk))
+        panic("spinlock_acquire: already holding lock");
+    
+    // 原子交换操作，尝试获取锁
+    while (__sync_lock_test_and_set(&lk->locked, 1) != 0)
+        ;
+    
+    // 设置持有锁的CPU
+    __sync_synchronize();
+    lk->cpuid = mycpuid();
 }
 
 // 释放自旋锁
 void spinlock_release(spinlock_t *lk)
 {
-
+    // 检查是否持有锁
+    if (!spinlock_holding(lk))
+        panic("spinlock_release: not holding lock");
+    
+    lk->cpuid = -1;
+    __sync_synchronize();
+    
+    // 原子释放锁
+    __sync_lock_release(&lk->locked);
+    pop_off();
 }
