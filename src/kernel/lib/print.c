@@ -68,7 +68,7 @@ void printf(const char *fmt, ...)
 
     va_start(ap, fmt);
     
-    spinlock_acquire(&print_lk);
+    // spinlock_acquire(&print_lk); // 注释掉锁以演示输出交错
     
     for (i = 0; (c = fmt[i] & 0xff) != 0; i++) {
         if (c != '%') {
@@ -108,7 +108,7 @@ void printf(const char *fmt, ...)
         }
     }
 
-    spinlock_release(&print_lk);
+    // spinlock_release(&print_lk); // 注释掉锁释放
     va_end(ap);
 }
 

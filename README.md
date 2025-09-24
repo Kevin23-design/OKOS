@@ -17,7 +17,7 @@
     ```
 
     **输出结果**：
-    ![alt text](image-1.png)  
+    ![alt text](pictures/image-1.png)  
 
 
     **原因分析**：  
@@ -37,7 +37,7 @@
     ```
 
     **输出结果**:  
-    ![alt text](image.png)  
+    ![alt text](pictures/image.png)  
 
     **原因分析**：
     - 两个CPU核心交替获取锁执行 `sum++` 操作
@@ -100,3 +100,9 @@ int main()
     return 0;
 }
 ```
+
+
+### 课后任务 `4.2`
+
+## 实验结果
+![alt text](pictures/image-4.2.png)

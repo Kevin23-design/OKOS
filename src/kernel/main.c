@@ -6,6 +6,14 @@ volatile static int started = 0;
 volatile static int sum = 0;
 static spinlock_t sum_lock;
 
+// 测试函数：打印长消息以演示输出交错
+void test_printf_interleave(int cpuid)
+{
+    for (int i = 0; i < 10; i++) {
+        printf("CPU %d: This is a long test message number %d to demonstrate interleaving output!\n", cpuid, i);
+    }
+}
+
 int main()
 {
     int cpuid = r_tp();
@@ -24,6 +32,9 @@ int main()
             spinlock_release(&sum_lock);
         }
         printf("cpu %d report: sum = %d\n", cpuid, sum);
+        
+        // 调用测试函数演示输出交错
+        test_printf_interleave(cpuid);
     } else {
         while(started == 0);
         __sync_synchronize();
@@ -34,6 +45,9 @@ int main()
             spinlock_release(&sum_lock);
         }
         printf("cpu %d report: sum = %d\n", cpuid, sum);
+        
+        // 调用测试函数演示输出交错
+        test_printf_interleave(cpuid);
     }
     
     // 无限循环，保持系统运行
