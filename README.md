@@ -99,3 +99,35 @@ int main()
 ![alt text](pictures/lab1实验结果截图03.png)
 
 ---
+## lab2
+### 第一阶段: 物理内存
+完成 pmem.c 的修改实现以下函数：
+```
+void pmem_init();    // 初始化系统, 只调用一次
+void* pmem_alloc();  // 申请一个空闲的物理页
+void pmem_free();    // 释放一个之前申请的物理页
+```
+#### test1
+完成 test1 这个测试用例，它的作用是：
+向cpu-0和cpu-1并行申请内核空间的全部物理内存, 赋值并输出信息，待申请全部结束, 并行释放所有申请的物理内存。实验结果的截图如下：
+![alt text](pictures/lab2截图01.png)
+
+#### test2
+test2测试用例的作用是：
+1. 测试内存耗尽的`panic`是否正常触发
+2. 测试用户空间物理页申请和释放的正确性
+
+实验结果的截图如下：
+![alt text](pictures/lab2截图02.png)
+
+### 第二阶段: 内核态虚拟内存
+修改 kvm.c ，实现页表项(PTE) 和 页表(pgtbl)。
+#### test1
+test1测试用例测试了两件事情:
+1. 使用内核页表后你的OS内核是否还能正常执行
+2. 使用映射和解映射操作修改你的页表, 使用vm_print输出它被修改前后的对比
+
+实验结果截图如下：
+![alt text](pictures/lab2截图03.png)
+
+#### test2
