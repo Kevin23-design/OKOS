@@ -30,6 +30,8 @@ int main()
         
         kvm_inithart();  // CPU1启用页表（使用CPU0创建的kernel_pgtbl）
         printf("CPU %d is booting!\n", cpuid);
+        test_mapping_and_unmapping();
+
     }
     
     while(1);
