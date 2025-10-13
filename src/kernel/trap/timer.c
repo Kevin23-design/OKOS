@@ -1,4 +1,8 @@
 #include "mod.h"
+// 寄存器操作等架构相关内联
+#include "../arch/mod.h"
+// 需要锁/printf等（后续timer_create/update可能用到）
+#include "../lib/mod.h"
 
 /*-------------------- 工作在M-mode --------------------*/
 
