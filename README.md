@@ -1,7 +1,5 @@
-# LAB-3 实验报告（学生版）
+# LAB-3 实验报告
 ---
-## 实验结果  
-![alt text](pictures/lab3串口中断.png)  
 
 ## 实现思路
 
@@ -52,7 +50,7 @@
 
 ---
 
-## 四、关键代码片段
+## 关键代码片段
 
 - S 态入口设置（`trap_kernel_inithart`）：
   - `w_stvec(kernel_vector);`
@@ -66,6 +64,44 @@
   - `\r`/`\n` → `\r\n`；`\b`/`0x7f` → `"\b \b"`；其它过滤
 
 ---
+
+## 测试样例
+### 嘀嗒测试
+在 `trap_kernel.c` 中的 `timer_interrupt_handle` 修改如下：
+```c
+// 时钟中断处理 (基于CLINT)
+void timer_interrupt_handler(void) {
+    // 清除 SSIP，避免反复进入
+    w_sip(r_sip() & ~2);
+
+    // 在合适的位置添加一行“滴答”输出
+    printf("cpu %d:di da\n", mycpuid());
+}
+```
+
+![alt text](pictures/lab3嘀嗒.png)
+
+并且，“di da”来自定时器触发的 S 态软件中断，其出现时间取决于两件事：每核何时开中断、各核 mtimecmp 何时到期。两核之间没有先后保证，所以可能先看到“cpu 1:di da”，再看到“cpu 0:di da”，所以与题干中的结果又一定出入。
+
+### 时钟快慢测试
+在 `trap_kernel.c` 中的 `timer_interrupt_handle` 修改如下：
+```c
+void timer_interrupt_handler(void) {
+    // 清除 SSIP，避免反复进入
+    w_sip(r_sip() & ~2);
+
+    // 递增全局ticks（原子加），仅CPU0打印
+    uint64 t = __sync_add_and_fetch(&g_ticks, 1);
+    if (mycpuid() == 0) {
+        printf("ticks=%d\n", (int)t);
+    }
+}
+```
+
+![alt text](pictures/lab3快慢.png)
+
+### UART输入测试
+![alt text](pictures/lab3串口中断.png)  
 
 ## 五、设计取舍与反思
 
