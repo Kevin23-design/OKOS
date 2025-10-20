@@ -139,7 +139,7 @@ typedef struct proc
 
 ### 用户进程的地址空间
 
-![pic](./picture/01.png)
+![pic](./pictures/01.png)
 
 图片显示了用户页表定义的用户进程地址空间 + 内核页表定义的内核程序地址空间
 
