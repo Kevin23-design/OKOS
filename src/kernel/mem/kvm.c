@@ -3,6 +3,9 @@
 // 内核页表
 static pgtbl_t kernel_pgtbl;
 
+// 高地址 trampoline 虚拟地址（不侵入全局头文件，这里局部定义）
+#define TRAMPOLINE (VA_MAX - PGSIZE)
+
 // 根据pagetable,找到va对应的pte
 // 若设置alloc=true 则在PTE无效时尝试申请一个物理页
 // 成功返回PTE, 失败返回NULL
@@ -141,6 +144,10 @@ void kvm_init()
     // 可分配区域映射 (ALLOC_BEGIN ~ ALLOC_END)
     uint64 alloc_size = (uint64)ALLOC_END - (uint64)ALLOC_BEGIN;
     vm_mappages(kernel_pgtbl, (uint64)ALLOC_BEGIN, (uint64)ALLOC_BEGIN, alloc_size, PTE_R | PTE_W);
+
+    // trampoline: 需要在内核/用户页表均映射到同一高地址
+    extern char trampoline[];
+    vm_mappages(kernel_pgtbl, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
 }
 
 // 每个CPU都需要调用, 从不使用页表切换到使用内核页表

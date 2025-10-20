@@ -1,4 +1,7 @@
 #include "mod.h"
+#include "../arch/mod.h"
+#include "../mem/mod.h"
+#include "../lib/mod.h"
 
 // 这个文件通过make build生成, 是proczero对应的ELF文件
 #include "../../user/initcode.h"
@@ -21,7 +24,20 @@ static proc_t proczero;
 // 完成trapframe和trampoline的映射
 pgtbl_t proc_pgtbl_init(uint64 trapframe)
 {
+    #define TRAMPOLINE (VA_MAX - PGSIZE)
+    #define TRAPFRAME  (TRAMPOLINE - PGSIZE)
 
+    pgtbl_t upgtbl = (pgtbl_t)pmem_alloc(true);
+    if (upgtbl == NULL) panic("proc_pgtbl_init: alloc pgtbl failed");
+    memset(upgtbl, 0, PGSIZE);
+
+    extern char trampoline[];
+    // 映射 trampoline（仅S态执行，不置U）
+    vm_mappages(upgtbl, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+    // 映射 trapframe（S态读写，不置U）
+    vm_mappages(upgtbl, TRAPFRAME, trapframe, PGSIZE, PTE_R | PTE_W);
+
+    return upgtbl;
 }
 
 /*
@@ -41,5 +57,48 @@ pgtbl_t proc_pgtbl_init(uint64 trapframe)
 */
 void proc_make_first()
 {
+    #define TRAMPOLINE (VA_MAX - PGSIZE)
+    #define TRAPFRAME  (TRAMPOLINE - PGSIZE)
+    #define USTACK     (TRAPFRAME - PGSIZE)
 
+    proc_t *p = &proczero;
+    p->pid = 0;
+
+    // 分配 trapframe
+    p->tf = (trapframe_t *)pmem_alloc(true);
+    if (p->tf == NULL) panic("proc_make_first: alloc tf failed");
+    memset(p->tf, 0, PGSIZE);
+
+    // 创建用户页表
+    p->pgtbl = proc_pgtbl_init((uint64)p->tf);
+
+    // 用户栈
+    void *ustack_pa = pmem_alloc(false);
+    if (ustack_pa == NULL) panic("proc_make_first: alloc ustack failed");
+    vm_mappages(p->pgtbl, USTACK, (uint64)ustack_pa, PGSIZE, PTE_R | PTE_W | PTE_U);
+    p->ustack_npage = 1;
+
+    // 用户代码页放在 PGSIZE
+    void *ucode_pa = pmem_alloc(false);
+    if (ucode_pa == NULL) panic("proc_make_first: alloc ucode failed");
+    memset(ucode_pa, 0, PGSIZE);
+    memmove(ucode_pa, initcode, MIN((uint32)initcode_len, (uint32)PGSIZE));
+    vm_mappages(p->pgtbl, PGSIZE, (uint64)ucode_pa, PGSIZE, PTE_R | PTE_X | PTE_U);
+
+    p->heap_top = PGSIZE + PGSIZE;
+
+    // 填写 trapframe 关键字段
+    p->tf->user_to_kern_satp = r_satp();
+    p->tf->user_to_kern_sp = r_sp();
+    extern void trap_user_handler();
+    p->tf->user_to_kern_trapvector = (uint64)trap_user_handler;
+    p->tf->user_to_kern_epc = PGSIZE;
+    p->tf->user_to_kern_hartid = r_tp();
+    p->tf->sp = USTACK + PGSIZE;
+
+    // 当前CPU绑定该进程并切回用户
+    cpu_t *c = mycpu();
+    c->proc = p;
+
+    trap_user_return();
 }
