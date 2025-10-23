@@ -8,6 +8,9 @@
 #define initcode target_user_initcode
 #define initcode_len target_user_initcode_len
 
+// 内核栈定义
+#define KSTACK(procid) (VA_MAX - PGSIZE * 2 - PGSIZE * (procid))
+
 // in trampoline.S
 extern char trampoline[];
 
@@ -89,12 +92,17 @@ void proc_make_first()
 
     // 填写 trapframe 关键字段
     p->tf->user_to_kern_satp = r_satp();
-    p->tf->user_to_kern_sp = r_sp();
+    p->tf->user_to_kern_sp = KSTACK(0) + PGSIZE;  // 内核栈顶
     extern void trap_user_handler();
     p->tf->user_to_kern_trapvector = (uint64)trap_user_handler;
-    p->tf->user_to_kern_epc = PGSIZE;
+    p->tf->user_to_kern_epc = PGSIZE + 0x2c;  // 用户程序入口点 (PGSIZE + ELF entry point)
     p->tf->user_to_kern_hartid = r_tp();
     p->tf->sp = USTACK + PGSIZE;
+
+    // 设置进程的内核栈和上下文
+    p->kstack = KSTACK(0);
+    p->ctx.sp = KSTACK(0) + PGSIZE;  // 内核栈顶
+    p->ctx.ra = (uint64)trap_user_return;  // 返回地址
 
     // 当前CPU绑定该进程并切回用户
     cpu_t *c = mycpu();

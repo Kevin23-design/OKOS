@@ -1,5 +1,8 @@
 #include "mod.h"
 
+// 内核栈定义
+#define KSTACK(procid) (VA_MAX - PGSIZE * 2 - PGSIZE * (procid))
+
 // 内核页表
 static pgtbl_t kernel_pgtbl;
 
@@ -148,6 +151,11 @@ void kvm_init()
     // trampoline: 需要在内核/用户页表均映射到同一高地址
     extern char trampoline[];
     vm_mappages(kernel_pgtbl, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+
+    // KSTACK(0): 进程0的内核栈映射
+    void *kstack0_pa = pmem_alloc(false);
+    if (kstack0_pa == NULL) panic("kvm_init: alloc kstack0 failed");
+    vm_mappages(kernel_pgtbl, KSTACK(0), (uint64)kstack0_pa, PGSIZE, PTE_R | PTE_W);
 }
 
 // 每个CPU都需要调用, 从不使用页表切换到使用内核页表

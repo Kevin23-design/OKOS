@@ -10,6 +10,12 @@ extern char user_return[]; // 内核处理完毕返回用户（trampoline内偏�
 // in trap.S
 extern char kernel_vector[]; // 内核态trap处理流程, 进入内核后应当切换中断处理入口
 
+
+// in trap_kernel.c
+extern char *interrupt_info[16]; // 中断错误信息
+extern char *exception_info[16]; // 异常错误信息
+
+
 // 在user_vector()里面调用
 // 用户态trap处理的核心逻辑
 void trap_user_handler()
@@ -42,19 +48,20 @@ void trap_user_handler()
 			break;
 		}
 	} else {
-		switch (trap_id) {
-		case 8: // ecall from U-mode
-			tf->user_to_kern_epc += 4; // 跳过 ecall
-			if (tf->a7 == 0) {
-				printf("proczero: hello world\n");
-			} else {
-				printf("unknown syscall %d\n", (int)tf->a7);
-			}
-			break;
-		default:
-			printf("unexpected user exception id=%d sepc=%p stval=%p\n", trap_id, tf->user_to_kern_epc, r_stval());
-			panic("trap_user_handler");
-		}
+	    switch (trap_id) {
+	    case 8: // ecall from U-mode
+	        // 保存用户程序的返回地址（ecall指令的下一条指令）
+	        tf->user_to_kern_epc += 4; // 跳过 ecall
+	        if (tf->a7 == 0) {
+	            printf("proczero: hello world\n");
+	        } else {
+	            printf("unknown syscall %d\n", (int)tf->a7);
+	        }
+	        break;
+	    default:
+	        printf("unexpected user exception id=%d sepc=%p stval=%p\n", trap_id, tf->user_to_kern_epc, r_stval());
+	        panic("trap_user_handler");
+	    }
 	}
 
 	trap_user_return();
