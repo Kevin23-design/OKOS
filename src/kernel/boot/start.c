@@ -21,7 +21,8 @@ void start()
     // 委托S-mode处理所有trap（异常与S态三类中断）
     // 异常：低16位足够覆盖本实验用到的异常类型
     w_medeleg(0xffff);
-    // 中断：SSIP(1) / STIP(5) / SEIP(9)
+    // 软件/时钟/外部三类中断交给 S-mode：
+    // SSIP(1) / STIP(5) / SEIP(9)
     w_mideleg((1 << 1) | (1 << 5) | (1 << 9));
     // 允许S态读 cycle/time/instret 计数器
     w_mcounteren(0x7);
