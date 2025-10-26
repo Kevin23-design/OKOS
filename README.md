@@ -51,32 +51,18 @@
                            sret → 回到被中断的指令
 ```
 
-在进入 `main()` 前用 `start()` 委托 S 级处理器接手中断（start.c 中 `w_mideleg`、`w_medeleg`、`w_mcounteren`）。在 `uart_intr()` 里支持回车、换行和退格（uart.c 的 CR/LF 归一化与 `"\b \b"` 逻辑）。通过 PLIC 识别 UART IRQ 并调用正确的处理中断流程（plic.c + `trap_kernel_handler()`→`external_interrupt_handler()`）。  
-
-### 怎么做
->`main()` 里 CPU0 先跑 `trap_kernel_init()`（初始化 PLIC、创建系统时钟），每核再跑 `trap_kernel_inithart()`（`w_stvec(kernel_vector)`、`w_sie(...)`、`intr_on()`），对应任务 3/4 的 “识别并进入 `uart_intr()`”。  
+### 关键步骤
 
 - **M 态委托与准备（start.c）**  
-  - `w_mideleg((1<<1)|(1<<5)|(1<<9))`：硬件默认只把中断送到 M 态，这里手工把软件/时钟/外部三类转给 S 态，等于告诉硬件“以后直接找内核（S）”。  
-  - `w_medeleg(...)`：异常也交给 S 态统一处理，否则一旦 U 态出错还得回 M 态，流程被打断。  
-  - `w_mcounteren(0x7)`：S 态需要读 `time`/`cycle`/`instret` 做调度或打印日志，不授权就会触发异常。  
-  - `mstatus.MPP = S`, `mepc = main`, `mret`：把返回目标改成 S 态 `main()`，实现“导演 (M) 布好场 → 把麦递给经理 (S)”。
-
 - **S 态入口与开关（main.c, `trap_kernel_inithart`, `trap_kernel_init`）**  
-  - `w_stvec(kernel_vector)`：装好门，任何 S 态 trap 统一进 `kernel_vector`，后面才能展开 C 层。  
-  - `w_sie(...)`：对外部/软件/时钟单独开闸；`intr_on()` 打开总开关，否则门虽装好但始终不响。  
-  - `plic_init()`/`plic_inithart()`：给 UART IRQ 配优先级、在每个 hart 上启用；缺它就收不到 PLIC 报告。
-
+每个 hart 在 `trap_kernel_inithart()` 里做三件事：`w_stvec(kernel_vector)` 装好 S 态 trap 入口、`w_sie(...)` 打开外部/软件/时钟三类中断开关、`intr_on()` 打开总开关。这样外设中断一到就会跳进 `kernel_vector`。
 - **Trap 入口保存（trap.S）**  
-  - `kernel_vector` 保存 32 个寄存器再调用 `trap_kernel_handler`：保证 C 代码能自由使用寄存器；没有这个“保存→处理→恢复”，回到原指令时寄存器会被破坏。
-
+`kernel_vector` 保存 32 个寄存器再调用 `trap_kernel_handler`：保证 C 代码能自由使用寄存器；没有这个“保存→处理→恢复”，回到原指令时寄存器会被破坏。
 - **返回 C 语言（trap_kernel.c）**  
-  - `trap_kernel_handler()` 解读 `scause`：高位=1 表示中断，低位=9 表示 S 态外部中断；这是抽象“判类型”的具体实现。  
-  - `external_interrupt_handler()` 里 `plic_claim()`：向 PLIC 询问“是谁敲门”；判断 `irq==UART_IRQ` 后调用 `uart_intr()`，最后 `plic_complete()` 告诉 PLIC“处理完了，可以放下一个”。
-
+`kernel_vector` 在 trap.S 里面，按 RISC-V 约定先把 32 个寄存器都推到栈上，确保后面的 C 代码不污染现场，然后调用 `trap_kernel_handler()`。这个函数读取 `scause`，判断高位是 1 就说明是中断，再看低 4 位是否为 9——这是 S 态外部中断。匹配后进入 
+在 `external_interrupt_handler()` 中调用 `plic_claim()` 询问 PLIC 哪个 IRQ 触发的。如果等于 `UART_IRQ`，就调用 `uart_intr()`。
 - **设备逻辑（`uart_intr()`）**  
-  - 循环 `uart_getc_sync()` 直到返 -1：清空 FIFO。  
-  - CR/LF 合并输出 `"\r\n"`、退格回显 `"\b \b"`、过滤不可打印字符：让终端行为可预期，同时保持“只回显、不做复杂逻辑”的设计原则。
+这个函数从 UART FIFO 里不断读字符，把 `\r`/`\n` 统一回显为 `\r\n`，对退格（`\b`/`0x7f`）输出 `"\b \b"` 完成视觉删除，其余只回显可打印字符。处理完后，一定要 `plic_complete(irq)` 归还，否则 PLIC 会认为我还没处理完，不会再发新中断。最后 `kernel_vector` 恢复寄存器，执行 `sret` 回到被打断的指令。
 
 
 
@@ -130,33 +116,21 @@ mret 返回 M 态上下文
          sret → 回到被中断的指令
 ```
 
-在切换到 S 态前，由 M 态完成时钟初始化和中断向量设置（timer_init() 写 mtimecmp、mtvec、mie）。把 M 态时钟中断转换成 S 态软件中断，再在 S 态更新 ticks 并清掉 SSIP（timer_vector→timer_interrupt_handler()→timer_update()→w_sip(r_sip() & ~2)）。
-
-### 怎么做
-
->start() 调 timer_init() 后 mret；timer_vector 里先用 mscratch 保存寄存器，再让 mtimecmp += INTERVAL，然后 csrs sip, 2 触发软件中断；trap_kernel_handler() 识别 scause 低位 1，调 timer_interrupt_handler()，只有 CPU0 调 timer_update()（spinlock 保护），最后清 SSIP。
+### 关键步骤
 
 - **M 态定时器配置（`start.c::timer_init`）**  
-  - `mtimecmp = mtime + INTERVAL`：先设下一次触发点，等价于启动硬件闹钟。  
-  - `mscratch` 指向本地临时区：给 `timer_vector` 提供存储寄存器和常量 (`mtimecmp` 地址、`INTERVAL`) 的位置。  
-  - `w_mtvec(timer_vector)`：指明“闹钟响时先找 `timer_vector`”；`w_mie(...|MIE_MTIE)` 打开时钟中断分开关，继续保留 `mstatus.MIE` 让 M 态能响应。
-
+在 `start()` 里调用 `timer_init()`，做三件事：把 `mtimecmp` 设成 `mtime + INTERVAL`；把当前 hart 的 `mscratch` 指向一块暂存区，存放 `mtimecmp` 地址和 `INTERVAL`；把 `mtvec` 设置成 `timer_vector` 并打开放在 `mie` 里的 MTIE 位。当 `mtime == mtimecmp` 时，硬件先跳到 `timer_vector`（还在 M 态）。
 - **S 态入口与开关（同串口）**  
-  - 同样需要 `w_stvec`、`w_sie`、`intr_on()`，否则 `timer_vector` 把软件中断交给 S 态后没人接。
-
 - **M 态中转（`timer_vector`）**  
-  - 交换 `mscratch` 与 `a0`、暂存 `a1-3`：腾出寄存器空间，说明必须在 M 态自己保存现场。  
-  - `mtimecmp += INTERVAL`：更新下一次闹钟，不做就只响一次。  
-  - `csrs sip, SIP_SSIP`：手工拉起 S 态软件中断标志，把事件“转发”给内核。  
-  - 恢复寄存器后 `mret`：返回原来的 M 态上下文（其实是回到被打断的 M 态指令），但因为设置了软件中断，接下来会立即跳到 `kernel_vector`。
-
+这里交换`mscratch` 与 `a0`，保存 `a1`~`a3`，再把 `mtimecmp` 加上 `INTERVAL`，相当于立刻预约下一次响铃。然后使用 `csrs sip, 2` 设置 S 态软件中断位，表示“有时钟事件需要内核处理”，最后恢复寄存器、`mret` 返回原来的 M 态上下文。因为软件中断位被置 1，接下来就会进入 S 态的 `kernel_vector`
 - **返回 C 语言（`trap_kernel_handler` → `timer_interrupt_handler`）**  
-  - `trap_kernel_handler()` 读 `scause` 高位=1、低位=1：识别是软件中断。  
-  - `timer_interrupt_handler()`：只让 CPU0 执行 `timer_update()`（配合自旋锁避免多核竞争），随后 `w_sip(r_sip() & ~2)` 清除软件中断位，不然立刻再次触发。
-
+S 态 `trap_kernel_handler()` 读取到 `scause` 高位=1 且低位=1，就进入 `timer_interrupt_handler()`。为了避免多核竞争，让 `mycpuid()==0` 的核执行 `timer_update()`，在自旋锁保护下递增 `sys_timer.ticks`，可用来驱动调度或打印节拍。处理完后，用 `w_sip(r_sip() & ~2)` 清掉软件中断位，否则会立即再次掉进中断。最后 `kernel_vector` 复原寄存器并 `sret` 返回。
 - **定时逻辑（`timer_update` 等）**  
   - `spinlock_acquire`/`release` 保护 `ticks`，防止并发写；`ticks++` 就是抽象里的“系统时钟加一”。后续可以在这里加调度、打印等行为。
 
+
+### 小总结
+>这两条链路的核心思想一样：先在 M 态（或 PLIC）把硬件信号转交给内核，再用统一的 `kernel_vector` 保存现场，进入 C 层根据 `scause` 分发到具体驱动，处理完后归还/清除，再恢复寄存器返回。串口是外设 IRQ，通过 PLIC 识别；时钟是 CLINT 触发，通过 M 态 `timer_vector` 转成 S 态软件中断。
 ---
 
 ## 测试样例
@@ -197,11 +171,3 @@ void timer_interrupt_handler(void) {
 ```
 
 ![alt text](pictures/lab3快慢.png)
-
-
-
-## 五、设计取舍与反思
-
-
-
----
