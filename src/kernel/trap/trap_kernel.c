@@ -138,6 +138,11 @@ void timer_interrupt_handler()
     // 所以只需要指定一个CPU(CPU-0)负责更新时钟
     if(mycpuid() == 0)
         timer_update();
+    // 打印tick信息
+    uint64 ticks = timer_get_ticks();
+    if (ticks % 100 == 0) {
+        printf("tick=%d\n", (int)ticks);
+   }
     // 清除 SSIP bit (S-mode software interrupt pending)
     // 宣布 S-mode 软件中断处理完成
     // 在 trap.S 里面有对应的两条命令, 去找找

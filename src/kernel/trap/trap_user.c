@@ -2,6 +2,10 @@
 #include "../arch/mod.h"
 #include "../mem/mod.h"
 
+
+#define TRAMPOLINE (VA_MAX - PGSIZE)
+#define TRAPFRAME  (TRAMPOLINE - PGSIZE)
+
 // in trampoline.S
 extern char trampoline[];  // 内核和用户切换的代码
 extern char user_vector[]; // 用户触发陷阱进入内核（trampoline内偏移）
@@ -71,9 +75,6 @@ void trap_user_handler()
 // 内核态返回用户态
 void trap_user_return()
 {
-	#define TRAMPOLINE (VA_MAX - PGSIZE)
-	#define TRAPFRAME  (TRAMPOLINE - PGSIZE)
-
 	proc_t *p = myproc();
 	trapframe_t *tf = p->tf;
 
