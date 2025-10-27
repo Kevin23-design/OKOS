@@ -4,7 +4,7 @@
 1. 2025.10.20 更新lab4文件
 2. 2025.10.20 张子扬初步完成实验，存在panic问题  
 3. 2025.10.23 王俊翔完善实验修改存在的错误版本 
-4. 2025.10.27 王俊翔完成测试二
+4. 2025.10.27 王俊翔完成测试二剩余部分
 ## 核心概念讲解
 
 ### 1. 进程控制块 (PCB) 结构
@@ -74,6 +74,111 @@ Trapframe 保存用户态到内核态切换时的寄存器状态：
   - `user_vector`: 用户态 trap 进入内核
   - `user_return`: 内核返回用户态
 - **Trap 处理**: 在 [`trap_user.c`](OKOS/src/kernel/trap/trap_user.c) 中实现系统调用处理
+
+## 执行流程详解
+
+### 1. 进程创建阶段 (`proc_make_first`)
+
+**状态变化**:
+```
+内核态 → 准备用户环境 → 设置 trapframe → 准备切换
+```
+
+**代码流程**:
+```c
+// 1. 分配 trapframe 内存
+p->tf = pmem_alloc(true);
+
+// 2. 创建用户页表
+p->pgtbl = proc_pgtbl_init((uint64)p->tf);
+
+// 3. 映射用户栈和代码页
+vm_mappages(p->pgtbl, USTACK, ustack_pa, PGSIZE, PTE_R|PTE_W|PTE_U);
+vm_mappages(p->pgtbl, PGSIZE, ucode_pa, PGSIZE, PTE_R|PTE_X|PTE_U);
+
+// 4. 设置 trapframe 关键字段
+p->tf->user_to_kern_epc = 0x102c;  // 用户程序入口
+p->tf->sp = USTACK + PGSIZE;       // 用户栈顶
+
+// 5. 切换到用户态
+trap_user_return();
+```
+
+### 2. 用户态返回阶段 (`trap_user_return`)
+
+**状态变化**:
+```
+内核态 → 设置 trap 向量 → 设置用户页表 → 执行 sret → 用户态
+```
+
+**关键寄存器设置**:
+- `stvec`: 指向 trampoline 的 `user_vector`
+- `sscratch`: 设置为 `TRAPFRAME` 虚拟地址
+- `sstatus`: 清除 SPP，设置 SPIE
+- `sepc`: 设置为 `0x102c` (用户程序入口)
+
+### 3. 用户程序执行阶段
+
+**状态变化**:
+```
+用户态执行 → 调用 helper(0) → 执行 ecall → 触发 trap
+```
+
+**用户程序流程**:
+```c
+main() {
+    helper(0);  // 第一次系统调用
+    helper(0);  // 第二次系统调用
+    while(1);   // 无限循环
+}
+
+helper(arg) {
+    a7 = arg;   // 设置系统调用号
+    ecall;      // 触发系统调用
+    return a0;  // 返回系统调用结果
+}
+```
+
+### 4. 系统调用处理阶段
+
+**状态变化**:
+```
+用户态 → 硬件 trap → trampoline → 内核态 → 处理系统调用 → 返回用户态
+```
+
+**详细流程**:
+
+1. **硬件自动操作**:
+   - 保存 `sepc` (当前 PC)
+   - 设置 `scause = 8` (U-mode ecall)
+   - 跳转到 `stvec` 指向的 trampoline
+
+2. **Trampoline 处理** (`user_vector`):
+   ```asm
+   csrrw a0, sscratch, a0  ; 交换 a0 和 sscratch
+   sd ra, 40(a0)           ; 保存所有寄存器到 trapframe
+   sd sp, 48(a0)
+   ...                     ; 保存其他寄存器
+   ld sp, 8(a0)            ; 加载内核栈指针
+   ld t0, 16(a0)           ; 加载 trap 处理函数
+   jr t0                   ; 跳转到 trap_user_handler
+   ```
+
+3. **内核系统调用处理** (`trap_user_handler`):
+   ```c
+   // 识别 ecall from U-mode
+   if (trap_id == 8) {
+       tf->user_to_kern_epc += 4;  // 跳过 ecall 指令
+       if (tf->a7 == 0) {
+           printf("proczero: hello world\n");
+       }
+   }
+   ```
+
+4. **返回用户态** (`trap_user_return`):
+   - 恢复用户寄存器
+   - 切换到用户页表
+   - 执行 `sret` 返回用户程序
 
 ## 关键代码片段
 
