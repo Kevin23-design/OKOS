@@ -8,9 +8,6 @@
 #define initcode target_user_initcode
 #define initcode_len target_user_initcode_len
 
-// 内核栈定义
-#define KSTACK(procid) (VA_MAX - PGSIZE * 2 - PGSIZE * (procid))
-
 // in trampoline.S
 extern char trampoline[];
 
@@ -31,9 +28,6 @@ static proc_t proczero;
 // 完成trapframe和trampoline的映射
 pgtbl_t proc_pgtbl_init(uint64 trapframe)
 {
-    #define TRAMPOLINE (VA_MAX - PGSIZE)
-    #define TRAPFRAME  (TRAMPOLINE - PGSIZE)
-
     pgtbl_t upgtbl = (pgtbl_t)pmem_alloc(true);
     if (upgtbl == NULL) panic("proc_pgtbl_init: alloc pgtbl failed");
     memset(upgtbl, 0, PGSIZE);
@@ -64,9 +58,8 @@ pgtbl_t proc_pgtbl_init(uint64 trapframe)
 */
 void proc_make_first()
 {
-    #define TRAMPOLINE (VA_MAX - PGSIZE)
-    #define TRAPFRAME  (TRAMPOLINE - PGSIZE)
-    #define USTACK     (TRAPFRAME - PGSIZE)
+    // 用户栈地址定义
+    #define USTACK (TRAPFRAME - PGSIZE)
 
     proc_t *p = &proczero;
     p->pid = 0;
@@ -85,21 +78,21 @@ void proc_make_first()
     vm_mappages(p->pgtbl, USTACK, (uint64)ustack_pa, PGSIZE, PTE_R | PTE_W | PTE_U);
     p->ustack_npage = 1;
 
-    // 用户代码页放在 PGSIZE
+    // 用户代码页放在 USER_BASE
     void *ucode_pa = pmem_alloc(false);
     if (ucode_pa == NULL) panic("proc_make_first: alloc ucode failed");
     memset(ucode_pa, 0, PGSIZE);
     memmove(ucode_pa, initcode, MIN((uint32)initcode_len, (uint32)PGSIZE));
-    vm_mappages(p->pgtbl, PGSIZE, (uint64)ucode_pa, PGSIZE, PTE_R | PTE_X | PTE_U);
+    vm_mappages(p->pgtbl, USER_BASE, (uint64)ucode_pa, PGSIZE, PTE_R | PTE_X | PTE_U);
 
-    p->heap_top = PGSIZE + PGSIZE;
+    p->heap_top = USER_BASE + PGSIZE;
 
     // 填写 trapframe 关键字段
     p->tf->user_to_kern_satp = r_satp();
     p->tf->user_to_kern_sp = KSTACK(0) + PGSIZE;  // 内核栈顶
     extern void trap_user_handler();
     p->tf->user_to_kern_trapvector = (uint64)trap_user_handler;
-    p->tf->user_to_kern_epc = PGSIZE + INITCODE_ENTRY_OFFSET;  // 用户程序入口点 (PGSIZE + ELF entry point)
+    p->tf->user_to_kern_epc = USER_BASE + INITCODE_ENTRY_OFFSET;  // 用户程序入口点 (USER_BASE + ELF entry point)
     p->tf->user_to_kern_hartid = r_tp();
     p->tf->sp = USTACK + PGSIZE;
 

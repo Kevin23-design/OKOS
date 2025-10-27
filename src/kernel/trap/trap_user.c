@@ -2,10 +2,6 @@
 #include "../arch/mod.h"
 #include "../mem/mod.h"
 
-
-#define TRAMPOLINE (VA_MAX - PGSIZE)
-#define TRAPFRAME  (TRAMPOLINE - PGSIZE)
-
 // in trampoline.S
 extern char trampoline[];  // 内核和用户切换的代码
 extern char user_vector[]; // 用户触发陷阱进入内核（trampoline内偏移）
