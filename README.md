@@ -3,6 +3,7 @@
 1. 2025.9.29 更新lab2文件
 2. 2025.9.29 张子扬完成修改pmem.c，完成lab2第一阶段
 3. 2025.10.13 王俊翔完成lab2第二阶段
+4. 2025.10.27 张子扬增加一个测试样例
 
 ## 代码结构
 ```
@@ -69,7 +70,7 @@ OKOS
 ```
 
 完成 pmem.c 的修改实现以下函数：
-```
+```c
 void pmem_init();    // 初始化系统, 只调用一次
 void* pmem_alloc();  // 申请一个空闲的物理页
 void pmem_free();    // 释放一个之前申请的物理页
@@ -101,6 +102,71 @@ test1测试用例测试了两件事情:
 #### test2
 这个测试用例主要关注映射和解映射是否正确执行，得到的实验结果截图如下：
 ![alt text](pictures/lab2截图04.png)
+
+### 补充测试样例
+`test_vm_multilevel_and_partial_unmap` 这个测试用例主要验证以下两个核心功能：
+1.  **多级页表创建**: 测试 `vm_mappages` 是否能够正确地创建缺失的中间级别页表。它会尝试在一个与之前映射地址相距甚远的虚拟地址上创建映射，这会强制 `vm_getpte` 函数分配新的二级甚至一级页表来完成地址翻译路径。
+2.  **部分解映射**: 测试 `vm_unmappages` 的精确性。它会先建立一个跨越多个页的连续映射区域，然后只解映射这个区域中间的一部分，最后通过 `vm_getpte` 检查，确保只有被指定的部分被解除了映射，而区域的头部和尾部映射依然有效。
+
+**测试代码**
+```c
+void test_vm_multilevel_and_partial_unmap()
+{
+    printf("starting test_vm_multilevel_and_partial_unmap...\n");
+    pgtbl_t pgtbl = (pgtbl_t)pmem_alloc(true);
+    memset(pgtbl, 0, PGSIZE);
+
+    // Test 1: 验证部分解映射 (Partial Unmap)
+    // 映射一个包含3个页的连续虚拟地址区域
+    uint64 va_start = 0x200000; // 2MB
+    uint64 pa_start = (uint64)pmem_alloc(false);
+    vm_mappages(pgtbl, va_start, pa_start, 3 * PGSIZE, PTE_R | PTE_W);
+
+    // 验证映射是否成功
+    assert(PTE_TO_PA(*vm_getpte(pgtbl, va_start, false)) == pa_start, "partial unmap: head mapping failed");
+    assert(PTE_TO_PA(*vm_getpte(pgtbl, va_start + PGSIZE, false)) == pa_start + PGSIZE, "partial unmap: middle mapping failed");
+    assert(PTE_TO_PA(*vm_getpte(pgtbl, va_start + 2 * PGSIZE, false)) == pa_start + 2 * PGSIZE, "partial unmap: tail mapping failed");
+
+    // 只解映射中间的页
+    vm_unmappages(pgtbl, va_start + PGSIZE, PGSIZE, false); // free_pa=false
+
+    // 检查：头部和尾部映射应仍然存在，中间的应被移除
+    pte_t *pte_head = vm_getpte(pgtbl, va_start, false);
+    pte_t *pte_mid = vm_getpte(pgtbl, va_start + PGSIZE, false);
+    pte_t *pte_tail = vm_getpte(pgtbl, va_start + 2 * PGSIZE, false);
+
+    assert(pte_head && (*pte_head & PTE_V), "partial unmap: head should remain mapped");
+    assert(!pte_mid || !(*pte_mid & PTE_V), "partial unmap: middle should be unmapped");
+    assert(pte_tail && (*pte_tail & PTE_V), "partial unmap: tail should remain mapped");
+    printf("test 1 (partial unmap) passed.\n");
+
+    // Test 2: 验证跨页目录的映射 (Multi-level Page Table Creation)
+    // 选择一个与之前地址相距很远的VA，强制创建新的L1/L2页表
+    uint64 va_far = 0x100000000; // 4GB, 肯定需要新的L1页表项
+    uint64 pa_far = (uint64)pmem_alloc(false);
+    vm_mappages(pgtbl, va_far, pa_far, PGSIZE, PTE_R);
+
+    // 验证映射是否成功
+    pte_t *pte_far = vm_getpte(pgtbl, va_far, false);
+    assert(pte_far && (*pte_far & PTE_V), "multi-level: far va mapping failed");
+    assert(PTE_TO_PA(*pte_far) == pa_far, "multi-level: pa mismatch for far va");
+    printf("test 2 (multi-level) passed.\n");
+
+    // 清理
+    pmem_free((void*)pa_start);
+    pmem_free((void*)pa_far);
+    // 假设有一个函数可以销毁整个页表以释放所有页表页
+    // vm_destroy(pgtbl); 
+    pmem_free(pgtbl);
+
+    printf("test_vm_multilevel_and_partial_unmap passed!\n");
+}
+```
+
+**实验结果**
+![alt text](pictures/image.png)
+通过实验测试
+
 
 ## 实验感想
 1. 与 CSAPP 的内容有所呼应，CSAPP 中介绍的页表结构、地址翻译机制、内存分配策略等概念在此次实验中得到了具体实现。特别是对虚拟内存"为每个进程提供独立地址空间假象"这一核心思想的理解更加深刻，从理论层面的页表遍历算法到实际的RISC-V SV39规范实现，真正体验了从抽象概念到硬件实现的完整过程，从理论到实践。
