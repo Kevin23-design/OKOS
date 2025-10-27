@@ -4,6 +4,44 @@
 2. 2025.9.22 张子扬完成子任务1：进入 main 函数
 3. 2025.9.23 张子扬完成完成部分子任务2：通过 printf 输出信息，但 spinlock 功能存在问题
 4. 2025.9.27 王俊翔完成 spinlock 功能的实现
+5. 2025.10.27 张子扬增加新的测试样例
+6. 2025.10.27 王俊翔优化 readme
+
+## 代码结构
+```
+OKOS
+├── LICENSE        开源协议  
+├── .vscode        配置了可视化调试环境
+├── registers.xml  配置了可视化调试环境  
+├── Makefile       编译运行整个项目  
+├── common.mk      Makefile中一些工具链的定义  
+├── kernel.ld      定义了内核程序在链接时的布局  
+├── pictures       README使用的图片目录  
+├── lab1实验文档.md 老师的实验文档
+├── README.md      实验报告 
+└── src            源码
+    └── kernel     内核源码
+        ├── arch   RISC-V相关
+        │   ├── method.h  
+        │   ├── mod.h  
+        │   └── type.h  
+        ├── boot   机器启动
+        │   ├── entry.S  
+        │   └── start.c (DONE)  
+        ├── lock   锁机制
+        │   ├── spinlock.c (DONE)  
+        │   ├── method.h  
+        │   ├── mod.h  
+        │   └── type.h  
+        ├── lib    常用库
+        │   ├── cpu.c  
+        │   ├── print.c (DONE)  
+        │   ├── uart.c  
+        │   ├── method.h  
+        │   ├── mod.h  
+        │   └── type.h  
+        └── main.c (DONE)  
+```
 
 ## 实验分析
 这个实验的目标是为了完成双核的机器启动, 进入main函数并输出启动信息，其涉及的主要文件与关键的启动流程如下所示:
@@ -131,6 +169,35 @@ int main()
 ![alt text](pictures/lab1实验结果截图03.png)
 
 图中可以看到 'a' 和 'b' 混乱交替输出的情景。
+
+### 补充测试：printf函数的格式化输出情况
+前面的“并行输出问题”测试了无锁 printf 在打印简单字符串时会发生交错，现在我们设计一个更复杂的场景，来检验 printf 函数本身格式化多种数据类型的能力，以及其内部锁在并发调用下保护输出完整性的能力。
+
+**测试思路：**
+
+1.  在 `main` 函数中，让两个 CPU 并发地循环调用 `printf`。
+2.  `printf` 的格式化字符串包含多种类型，如整数(`%d`)、十六进制(`%x`)、指针地址(`%p`)和字符串(`%s`)。
+3.  每个 CPU 打印独有的数据，以便清晰地分辨输出归属。
+4.  观察在 `printf` 内部有锁的情况下，输出是否保持了每一行的原子性（即完整性）。
+
+
+**测试代码**
+```c
+// 每个CPU使用不同的数据进行打印
+char* str_to_print = (cpuid == 0) ? "String-from-CPU0" : "String-from-CPU1";
+int hex_val = (cpuid == 0) ? 0xABCD : 0x1234;
+int* ptr_val = &hex_val;
+
+// 循环打印复杂的格式化字符串
+for (int i = 0; i < 5; i++) {
+    printf("[CPU %d] Iter=%d, Hex=%x, Ptr=%p, Str=\"%s\"\n",
+            cpuid, i, hex_val, ptr_val, str_to_print);
+}
+```
+
+**测试结果**
+![alt text](image.png)
+结论：该测试结果表明，你的 printf 实现不仅能够正确处理复杂的格式化字符串，而且其内部的锁机制也有效地保证了在多核并发调用下的输出原子性，成功避免了数据竞争。
 
 ## 实验反思
 ### 并发不等于并行的高效
