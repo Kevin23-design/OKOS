@@ -23,6 +23,10 @@ extern void trap_user_return();
 // 第一个用户进程
 static proc_t proczero;
 
+// initcode entry 偏移（相对于页面基址 PGSIZE）
+#define INITCODE_ENTRY_OFFSET 0x2c
+
+
 // 获得一个初始化过的用户页表
 // 完成trapframe和trampoline的映射
 pgtbl_t proc_pgtbl_init(uint64 trapframe)
@@ -95,7 +99,7 @@ void proc_make_first()
     p->tf->user_to_kern_sp = KSTACK(0) + PGSIZE;  // 内核栈顶
     extern void trap_user_handler();
     p->tf->user_to_kern_trapvector = (uint64)trap_user_handler;
-    p->tf->user_to_kern_epc = PGSIZE + 0x2c;  // 用户程序入口点 (PGSIZE + ELF entry point)
+    p->tf->user_to_kern_epc = PGSIZE + INITCODE_ENTRY_OFFSET;  // 用户程序入口点 (PGSIZE + ELF entry point)
     p->tf->user_to_kern_hartid = r_tp();
     p->tf->sp = USTACK + PGSIZE;
 
