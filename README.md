@@ -5,6 +5,58 @@
 2. 2025.10.14 王俊翔完成实验要求 1&2
 3. 2025.10.16 张子扬完成实验要求 3&4
 4. 2025.10.26 王俊翔完善 readme，增加图解
+5. 2025.10.30 张子扬增加新的测试样例
+
+## 代码结构
+```
+OKOS
+├── LICENSE        开源协议
+├── .vscode        配置了可视化调试环境
+├── registers.xml  配置了可视化调试环境
+├── common.mk      Makefile中一些工具链的定义
+├── Makefile       编译运行整个项目
+├── kernel.ld      定义了内核程序在链接时的布局
+├── pictures       README使用的图片目录 (CHANGE, 日常更新)
+├── lab3-README.md 实验指导书 (CHANGE, 日常更新)
+├── README.md      实验报告 (CHANGE, 日常更新)
+└── src            源码
+    └── kernel     内核源码
+        ├── arch   RISC-V相关
+        │   ├── method.h
+        │   ├── mod.h
+        │   └── type.h (CHANGE, 新增一些RISC-V中断相关宏定义)
+        ├── boot   机器启动
+        │   ├── entry.S
+        │   └── start.c (DONE, 在M-mode多做一些事情再进入S-mode)
+        ├── lock   锁机制
+        │   ├── spinlock.c
+        │   ├── method.h
+        │   ├── mod.h
+        │   └── type.h
+        ├── lib    常用库
+        │   ├── cpu.c
+        │   ├── print.c
+        │   ├── uart.c
+        │   ├── utils.c
+        │   ├── method.h
+        │   ├── mod.h
+        │   └── type.h
+        ├── mem    内存模块
+        │   ├── pmem.c
+        │   ├── kvm.c
+        │   ├── method.h
+        │   ├── mod.h
+        │   └── type.h
+        ├── trap   陷阱模块
+        │   ├── plic.c (NEW, 实现os对UART外设中断的响应功能)
+        │   ├── timer.c (DONE, 实现时钟中断和计时器)
+        │   ├── trap_kernel.c (DONE, 内核态trap处理的核心逻辑)
+        │   ├── trap.S (NEW, trap的汇编入口)
+        │   ├── method.h (CHANGE)
+        │   ├── mod.h
+        │   └── type.h (CHANGE)
+        └── main.c (DONE, 更多的初始化)
+```
 
 ## 实现思路  
   
@@ -172,7 +224,58 @@ void timer_interrupt_handler(void) {
 ### UART输入测试
 ![alt text](pictures/lab3串口中断.png)  
 实现了输入字符并回显到屏幕上(包括Backspace和换行)
+### 补充测试：非法指令异常测试
+从外部中断（时钟、串口）转而关注到同步异常（Synchronous Exception），更好地检验 trap 机制的完整性。
+目标与功能说明:
+这个测试用例的目标是验证内核的 trap 处理程序不仅能处理中断，也能正确捕获和响应由 CPU 自身执行错误指令而引发的同步异常。
+具体来说，它会执行以下步骤：
+1.  在 `main` 函数中，故意调用一个包含非法指令的内联汇编函数。
+2.  当 CPU 执行到这条非法指令时，它会立即触发一个“非法指令异常”。
+3.  硬件将自动跳转到 `kernel_vector`，保存现场，然后调用 `trap_kernel_handler`。
+4.  `trap_kernel_handler` 需要被修改，以识别代表“非法指令异常”的 `scause` 值（根据 RISC-V 规范，该值为 2）。
+5.  当识别到此异常时，处理程序会打印一条信息，表明已成功捕获异常，然后**手动将 `sepc`（Supervisor Exception Program Counter）寄存器加 4**，以跳过这条非法的指令，防止系统陷入无限的异常循环。
+6.  最后，从 `trap` 中返回，程序应能继续执行非法指令之后的代码。
+
+
+部分代码细节如下：
+在`trap_kernel_handler()`增加case2
+```c
+// 2-异常处理
+     switch (trap_id) // 异常产生原因分类
+     {
+
+        case 2: // Illegal instruction
+            // 捕获并打印非法指令异常信息，跳过出错指令后返回
+            printf("\nIllegal instruction exception at sepc=%p, stval=%p\n", sepc, stval);
+            // 假定指令宽度为4字节，跳过并继续执行
+            w_sepc(sepc + 4);
+            break;
+        default: // 例外处理
+            printf("\nunexpected exception: %s\n", exception_info[trap_id]);
+            printf("trap_id = %d, sepc = %p, stval = %p\n", trap_id, sepc, stval);
+            panic("trap_kernel_handler");
+        }
+```
+
+在`main.c`中增加测试函数
+```c
+// 触发并测试非法指令异常的恢复能力
+void test_illegal_instruction()
+{
+    printf("--> Testing illegal instruction exception...\n");
+    // 插入一个通常被视为非法的机器指令（0x00000000）来触发异常
+    asm volatile(".word 0x00000000");
+    // 如果trap处理正确，此行应被执行
+    printf("--> Successfully recovered from illegal instruction!\n");
+}
+```
+
+实验结果截图如下：
+![alt text](pictures/lab3补充测试.png) 
+成功证明 `trap` 链路对于同步异常同样有效，并且具备了从简单错误中恢复的能力!
+
 
 ## 实验感想
 1. 真切体会到“入口要干净”：trap.S 先把32个寄存器完整压栈，不然 C 里随手用寄存器就会把现场污染；返回前对齐地恢复，sret 才能稳回原指令。
 2. 定时器这条链路很妙：M 态的 timer_vector 只做“续约 mtimecmp + csrs sip, SSIP”，真正工作在 S 态完成；而且 PLIC 一定要 claim/complete，否则后续中断直接饿死。
+3. **退格处理问题**：在串口输入测试中，目前虽然支持了换行和退格的基本操作，但对于已经换行后，无法像编辑普通文本一样，通过退格回退到上一行，这是因为终端显示机制（QEMU 的 -nographic ）限制导致终端的光标无法上移一行，也确实是终端的性质，所以保留该功能不多做修改。
