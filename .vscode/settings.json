@@ -15,5 +15,9 @@
     "git.autofetch": true,
     "scm.alwaysShowRepositories": true,
     "scm.showActions": true,
-    "C_Cpp.default.compilerPath": "/usr/bin/gcc"
+    "C_Cpp.default.compilerPath": "/usr/bin/gcc",
+    "files.associations": {
+        "initcode.h": "c",
+        "mod.h": "c"
+    }
 }

@@ -23,7 +23,6 @@ static proc_t proczero;
 // initcode entry 偏移（相对于页面基址 PGSIZE）
 #define INITCODE_ENTRY_OFFSET 0x2c
 
-
 // 获得一个初始化过的用户页表
 // 完成trapframe和trampoline的映射
 pgtbl_t proc_pgtbl_init(uint64 trapframe)
