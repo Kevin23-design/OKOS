@@ -5,6 +5,72 @@
 2. 2025.10.20 张子扬初步完成实验，存在panic问题  
 3. 2025.10.23 王俊翔完善实验修改存在的错误版本 
 4. 2025.10.27 王俊翔完成测试二剩余部分
+
+## 代码组织结构
+```
+OKOS
+├── LICENSE        开源协议
+├── .vscode        配置了可视化调试环境
+├── registers.xml  配置了可视化调试环境
+├── .gdbinit.tmp-riscv xv6自带的调试配置
+├── common.mk      Makefile中一些工具链的定义
+├── Makefile       编译运行整个项目
+├── kernel.ld      定义了内核程序在链接时的布局 (CHANGE, 支持trampsec)
+├── pictures       README使用的图片目录 (CHANGE, 日常更新)
+├── README.md      实验报告 (DONE)
+├── lab4-README.md 实验指导书 (CHANGE, 日常更新)
+└── src            源码
+    ├── kernel     内核源码
+    │   ├── arch   RISC-V相关
+    │   │   ├── method.h
+    │   │   ├── mod.h
+    │   │   └── type.h
+    │   ├── boot   机器启动
+    │   │   ├── entry.S
+    │   │   └── start.c
+    │   ├── lock   锁机制
+    │   │   ├── spinlock.c
+    │   │   ├── method.h
+    │   │   ├── mod.h
+    │   │   └── type.h
+    │   ├── lib    常用库
+    │   │   ├── cpu.c (CHANGE, 新增myproc函数)
+    │   │   ├── print.c
+    │   │   ├── uart.c
+    │   │   ├── utils.c
+    │   │   ├── method.h (CHANGE, 新增myproc函数)
+    │   │   ├── mod.h
+    │   │   └── type.h (CHANGE, 扩充CPU结构体 + 帮助)
+    │   ├── mem    内存模块
+    │   │   ├── pmem.c
+    │   │   ├── kvm.c (DONE, 增加内核页表的映射内容 trampoline + KSTACK(0))
+    │   │   ├── method.h
+    │   │   ├── mod.h
+    │   │   └── type.h
+    │   ├── trap   陷阱模块
+    │   │   ├── plic.c
+    │   │   ├── timer.c
+    │   │   ├── trap_kernel.c (CHANGE, 去掉了提示信息的static标记)
+    │   │   ├── trap_user.c (DONE, 用户态陷阱处理)
+    │   │   ├── trap.S
+    │   │   ├── trampoline.S
+    │   │   ├── method.h (CHANGE, 增加函数定义)
+    │   │   ├── mod.h
+    │   │   └── type.h
+    │   ├── proc   进程模块
+    │   │   ├── proc.c (DONE, 进程管理核心逻辑)
+    │   │   ├── swtch.S (NEW, 上下文切换)
+    │   │   ├── method.h (NEW)
+    │   │   ├── mod.h (NEW)
+    │   │   └── type.h (NEW)
+    │   └── main.c (CHANGE, 日常更新)
+    └── user       用户程序
+        ├── initcode.c (NEW)
+        ├── sys.h (NEW)
+        ├── syscall_arch.h (NEW)
+        └── syscall_num.h (NEW)
+```
+
 ## 核心概念讲解
 
 ### 1. 进程控制块 (PCB) 结构
@@ -243,15 +309,14 @@ void trap_user_handler()
 ```
 
 ### 寻找initcode入口：
->虚拟地址映射：initcode 二进制被映射到用户虚拟页 PGSIZE = 0x1000，反汇编中偏移 0x2c 对应运行时地址 0x102c。
+虚拟地址映射：initcode 二进制被映射到用户虚拟页 PGSIZE = 0x1000，反汇编中偏移 0x2c 对应运行时地址 0x102c
+
 ```c
 unsigned char target_user_initcode[] = {
   0x13, 0x01, 0x01, 0xfe, 0x23, 0x3c, 0x81, 0x00, 0x13, 0x04, 0x01, 0x02,
   0x23, 0x34, 0xa4, 0xfe, 0x83, 0x38, 0x84, 0xfe, 0x73, 0x00, 0x00, 0x00,
   0x93, 0x07, 0x05, 0x00, 0x13, 0x85, 0x07, 0x00, 0x03, 0x34, 0x81, 0x01,
-  0x13, 0x01, 0x01, 0x02, 0x67, 0x80, 0x00, 0x00,
-  
-                                                  0x13, 0x01, 0x01, 0xff,
+  0x13, 0x01, 0x01, 0x02, 0x67, 0x80, 0x00, 0x00, 0x13, 0x01, 0x01, 0xff,
   0x23, 0x34, 0x11, 0x00, 0x23, 0x30, 0x81, 0x00, 0x13, 0x04, 0x01, 0x01,
   0x13, 0x05, 0x00, 0x00, 0x97, 0x00, 0x00, 0x00, 0xe7, 0x80, 0x00, 0xfc,
   0x13, 0x05, 0x00, 0x00, 0x97, 0x00, 0x00, 0x00, 0xe7, 0x80, 0x40, 0xfb,
@@ -259,7 +324,7 @@ unsigned char target_user_initcode[] = {
 };
 ```
 
-伪 C
+把以上的汇编翻译成C的伪代码如下，方便理解分析：
 ```c
 // 地址 0x1000 + 0x0（反汇编偏移 0x0）
 // helper routine，作用：把传入的参数放到 a7，然后触发 ecall，返回 a0
@@ -292,8 +357,19 @@ int main(void) {
 ```
 
 ## 测试样例
+![alt image](pictures/测试helloworld_time_uart.png)
+通过测试样例，我们实现了以下的目标：
+1.  验证系统调用功能：
+    *   创建并运行第一个用户进程 `proczero`。
+    *   `proczero` 执行的用户程序 (`initcode.c`) 会发起两次 `SYS_helloworld` 系统调用。
+    *   内核捕获到这个来自用户态的 `ecall` 异常后，会进行处理，并打印出 "proczero: hello world!"。
+    *   这个测试证明了用户进程能够通过系统调用与内核进行交互，并获得内核提供的服务。
 
-[!alt image](pictures/测试helloworld_time_uart.png)
+2.  **验证用户态下的中断处理**：
+    *   在用户进程 `proczero` 运行时，测试系统是否还能正确响应外部中断——时钟中断和串口中断。
+    *   这确保了在引入用户态后，原有的中断处理机制依然能够正常工作，CPU可以从用户态正确陷入内核来响应中断，并在处理完毕后返回用户态继续执行。
+
+总而言之，测试样例验证了从内核态到用户态的切换、用户进程的执行、系统调用的完整处理流程以及在用户态下中断响应的正确性。
 
 ## 五、设计取舍与反思
 
