@@ -79,7 +79,7 @@ void proc_make_first()
     if (ucode_pa == NULL) panic("proc_make_first: alloc ucode failed");
     memset(ucode_pa, 0, PGSIZE);
     memmove(ucode_pa, initcode, MIN((uint32)initcode_len, (uint32)PGSIZE));
-    vm_mappages(p->pgtbl, USER_BASE, (uint64)ucode_pa, PGSIZE, PTE_R | PTE_X | PTE_U);
+    vm_mappages(p->pgtbl, USER_BASE, (uint64)ucode_pa, PGSIZE, PTE_R | PTE_W | PTE_X | PTE_U);
 
     p->heap_top = USER_BASE + PGSIZE;
 
