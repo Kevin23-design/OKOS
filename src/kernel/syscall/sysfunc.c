@@ -154,7 +154,49 @@ uint64 sys_brk()
 */
 uint64 sys_mmap()
 {
-    return 0;
+    proc_t *p = myproc();
+    uint64 begin;
+    uint64 len;
+    
+    // 读取参数
+    arg_uint64(0, &begin);
+    arg_uint64(1, &len);
+    
+    // 检查 len 是否是页对齐的
+    if (len == 0 || len % PGSIZE != 0) {
+        printf("sys_mmap: len is not page-aligned or zero\n");
+        return -1;
+    }
+    
+    // 检查 begin 是否是页对齐的（如果不为0）
+    if (begin != 0 && begin % PGSIZE != 0) {
+        printf("sys_mmap: begin is not page-aligned\n");
+        return -1;
+    }
+    
+    uint32 npages = len / PGSIZE;
+    
+    // 调用 uvm_mmap
+    uvm_mmap(begin, npages, PTE_R | PTE_W | PTE_U);
+    
+    // 如果 begin == 0，需要找到实际分配的地址
+    if (begin == 0) {
+        // 遍历 mmap 链表找到最新分配的区域
+        mmap_region_t *tmp = p->mmap;
+        while (tmp != NULL && tmp->npages != npages) {
+            tmp = tmp->next;
+        }
+        if (tmp != NULL) {
+            begin = tmp->begin;
+        }
+    }
+    
+    printf("sys_mmap: allocated region [%p, %p)\n", begin, begin + len);
+    uvm_show_mmaplist(p->mmap);
+    vm_print(p->pgtbl);
+    printf("\n");
+    
+    return begin;
 }
 
 /*
@@ -165,5 +207,35 @@ uint64 sys_mmap()
 */
 uint64 sys_munmap()
 {
+    proc_t *p = myproc();
+    uint64 begin;
+    uint64 len;
+    
+    // 读取参数
+    arg_uint64(0, &begin);
+    arg_uint64(1, &len);
+    
+    // 检查 len 是否是页对齐的
+    if (len == 0 || len % PGSIZE != 0) {
+        printf("sys_munmap: len is not page-aligned or zero\n");
+        return -1;
+    }
+    
+    // 检查 begin 是否是页对齐的
+    if (begin % PGSIZE != 0) {
+        printf("sys_munmap: begin is not page-aligned\n");
+        return -1;
+    }
+    
+    uint32 npages = len / PGSIZE;
+    
+    // 调用 uvm_munmap
+    uvm_munmap(begin, npages);
+    
+    printf("sys_munmap: unmapped region [%p, %p)\n", begin, begin + len);
+    uvm_show_mmaplist(p->mmap);
+    vm_print(p->pgtbl);
+    printf("\n");
+    
     return 0;
 }

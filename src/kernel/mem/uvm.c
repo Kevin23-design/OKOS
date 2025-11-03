@@ -159,7 +159,49 @@ static void mmap_merge(mmap_region_t *mmap_1, mmap_region_t *mmap_2, bool keep_m
 __attribute__((unused))
 static uint64 uvm_mmap_find(mmap_region_t *head_mmap, uint64 len, mmap_region_t **p_last_mmap, mmap_region_t **p_tmp_mmap)
 {
-    // TODO: 任务4实现
+    mmap_region_t *tmp = head_mmap;
+    uint64 search_begin = MMAP_BEGIN;
+    
+    // 从 MMAP_BEGIN 开始扫描，寻找第一个足够大的空隙
+    while (tmp != NULL) {
+        // 检查 [search_begin, tmp->begin) 是否足够大
+        if (tmp->begin >= search_begin + len) {
+            // 找到了足够的空间
+            *p_tmp_mmap = tmp;
+            if (tmp == head_mmap) {
+                *p_last_mmap = NULL;
+            } else {
+                // 需要找到tmp的前一个节点
+                mmap_region_t *prev = head_mmap;
+                while (prev->next != tmp) {
+                    prev = prev->next;
+                }
+                *p_last_mmap = prev;
+            }
+            return search_begin;
+        }
+        
+        // 更新搜索起始位置到当前区域的结束位置
+        search_begin = tmp->begin + tmp->npages * PGSIZE;
+        tmp = tmp->next;
+    }
+    
+    // 检查最后一个区域之后是否有足够空间
+    if (search_begin + len <= MMAP_END) {
+        *p_last_mmap = NULL;
+        // 需要找到链表的最后一个节点
+        if (head_mmap != NULL) {
+            tmp = head_mmap;
+            while (tmp->next != NULL) {
+                tmp = tmp->next;
+            }
+            *p_last_mmap = tmp;
+        }
+        *p_tmp_mmap = NULL;
+        return search_begin;
+    }
+    
+    // 没有找到足够的空间
     return 0;
 }
 
@@ -169,7 +211,79 @@ static uint64 uvm_mmap_find(mmap_region_t *head_mmap, uint64 len, mmap_region_t 
 // 失败则panic卡死
 void uvm_mmap(uint64 begin, uint32 npages, int perm)
 {
-
+    proc_t *p = myproc();
+    uint64 len = npages * PGSIZE;
+    
+    mmap_region_t *last_mmap = NULL;
+    mmap_region_t *tmp_mmap = NULL;
+    
+    // 如果 begin == 0，自动寻找空间
+    if (begin == 0) {
+        begin = uvm_mmap_find(p->mmap, len, &last_mmap, &tmp_mmap);
+        if (begin == 0) {
+            panic("uvm_mmap: no space found");
+        }
+    } else {
+        // 检查边界
+        if (begin < MMAP_BEGIN || begin + len > MMAP_END) {
+            panic("uvm_mmap: address out of range");
+        }
+        
+        // 找到插入位置
+        if (p->mmap == NULL || begin < p->mmap->begin) {
+            // 插入到链表头部
+            last_mmap = NULL;
+            tmp_mmap = p->mmap;
+        } else {
+            // 找到插入位置
+            last_mmap = p->mmap;
+            while (last_mmap->next != NULL && last_mmap->next->begin < begin) {
+                last_mmap = last_mmap->next;
+            }
+            tmp_mmap = last_mmap->next;
+        }
+    }
+    
+    // 创建新的 mmap_region
+    mmap_region_t *new_mmap = mmap_region_alloc();
+    new_mmap->begin = begin;
+    new_mmap->npages = npages;
+    new_mmap->next = tmp_mmap;
+    
+    // 插入链表
+    if (last_mmap == NULL) {
+        p->mmap = new_mmap;
+    } else {
+        last_mmap->next = new_mmap;
+    }
+    
+    // 尝试与前面的节点合并
+    if (last_mmap != NULL && last_mmap->begin + last_mmap->npages * PGSIZE == new_mmap->begin) {
+        // 合并：扩展 last_mmap，释放 new_mmap
+        last_mmap->npages += new_mmap->npages;
+        last_mmap->next = new_mmap->next;  // 重要：更新链表指针
+        mmap_region_free(new_mmap);
+        new_mmap = last_mmap;  // 更新 new_mmap 指向合并后的节点
+    }
+    
+    // 尝试与后面的节点合并
+    if (new_mmap->next != NULL && new_mmap->begin + new_mmap->npages * PGSIZE == new_mmap->next->begin) {
+        // 合并：扩展 new_mmap，释放 next
+        mmap_region_t *next_mmap = new_mmap->next;
+        new_mmap->npages += next_mmap->npages;
+        new_mmap->next = next_mmap->next;  // 重要：更新链表指针
+        mmap_region_free(next_mmap);
+    }
+    
+    // 分配物理页并映射
+    for (uint64 va = begin; va < begin + len; va += PGSIZE) {
+        void *pa = pmem_alloc(false);
+        if (pa == NULL) {
+            panic("uvm_mmap: pmem_alloc failed");
+        }
+        memset(pa, 0, PGSIZE);
+        vm_mappages(p->pgtbl, va, (uint64)pa, PGSIZE, perm);
+    }
 }
 
 
@@ -177,7 +291,85 @@ void uvm_mmap(uint64 begin, uint32 npages, int perm)
 // 失败则panic卡死
 void uvm_munmap(uint64 begin, uint32 npages)
 {
-
+    proc_t *p = myproc();
+    uint64 end = begin + npages * PGSIZE;
+    
+    // 检查边界
+    if (begin < MMAP_BEGIN || end > MMAP_END) {
+        panic("uvm_munmap: address out of range");
+    }
+    
+    mmap_region_t *prev = NULL;
+    mmap_region_t *curr = p->mmap;
+    
+    while (curr != NULL && curr->begin < end) {
+        uint64 curr_end = curr->begin + curr->npages * PGSIZE;
+        
+        // 检查是否有交集
+        if (curr_end > begin) {
+            // 有交集，需要处理
+            uint64 unmap_begin = (curr->begin > begin) ? curr->begin : begin;
+            uint64 unmap_end = (curr_end < end) ? curr_end : end;
+            
+            // 情况1: 完全包含当前节点
+            if (begin <= curr->begin && end >= curr_end) {
+                // 解除映射并释放物理页
+                vm_unmappages(p->pgtbl, curr->begin, curr->npages * PGSIZE, true);
+                
+                // 从链表中删除
+                mmap_region_t *to_free = curr;
+                if (prev == NULL) {
+                    p->mmap = curr->next;
+                    curr = p->mmap;
+                } else {
+                    prev->next = curr->next;
+                    curr = curr->next;
+                }
+                mmap_region_free(to_free);
+                continue;
+            }
+            // 情况2: 只覆盖前半部分
+            else if (begin <= curr->begin && end < curr_end) {
+                uint32 unmap_npages = (unmap_end - unmap_begin) / PGSIZE;
+                vm_unmappages(p->pgtbl, unmap_begin, unmap_npages * PGSIZE, true);
+                
+                // 修改当前节点
+                curr->npages -= unmap_npages;
+                curr->begin = unmap_end;
+            }
+            // 情况3: 只覆盖后半部分
+            else if (begin > curr->begin && end >= curr_end) {
+                uint32 unmap_npages = (unmap_end - unmap_begin) / PGSIZE;
+                vm_unmappages(p->pgtbl, unmap_begin, unmap_npages * PGSIZE, true);
+                
+                // 修改当前节点
+                curr->npages -= unmap_npages;
+            }
+            // 情况4: 中间打洞
+            else if (begin > curr->begin && end < curr_end) {
+                // 需要分裂成两个节点
+                uint32 unmap_npages = (unmap_end - unmap_begin) / PGSIZE;
+                vm_unmappages(p->pgtbl, unmap_begin, unmap_npages * PGSIZE, true);
+                
+                // 创建新节点表示后半部分
+                mmap_region_t *new_mmap = mmap_region_alloc();
+                new_mmap->begin = end;
+                new_mmap->npages = (curr_end - end) / PGSIZE;
+                new_mmap->next = curr->next;
+                
+                // 修改当前节点表示前半部分
+                curr->npages = (begin - curr->begin) / PGSIZE;
+                curr->next = new_mmap;
+                
+                prev = new_mmap;
+                curr = new_mmap->next;
+                continue;
+            }
+        }
+        
+        prev = curr;
+        curr = curr->next;
+    }
 }
 
 /*------------------part-3: 用户空间heap和stack管理相关------------------*/

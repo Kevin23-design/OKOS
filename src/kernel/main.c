@@ -3,12 +3,7 @@
 #include "trap/mod.h"
 #include "syscall/mod.h"
 
-// in main.c
 volatile static int started = 0;
-volatile static bool over_1 = false, over_2 = false;
-volatile static bool over_3 = false, over_4 = false;
-
-void* mmap_list[N_MMAP];
 
 int main()
 {
@@ -24,32 +19,13 @@ int main()
         trap_kernel_init();
         trap_kernel_inithart();
         
-        // 初始化 + 初始状态显示
+        // 初始化 mmap 资源仓库
         mmap_init();
-        mmap_show_nodelist();
-        printf("\n");
-
-        __sync_synchronize();
-        started = 1;
-
-        // 申请
-        for(int i = 0; i < N_MMAP / 2; i++)
-            mmap_list[i] = mmap_region_alloc();
-        over_1 = true;
-
-        // 屏障
-        while(over_1 == false ||  over_2 == false);
-
-        // 释放
-        for(int i = 0; i < N_MMAP / 2; i++)
-            mmap_region_free(mmap_list[i]);
-        over_3 = true;
-
-        // 屏障
-        while (over_3 == false || over_4 == false);
-
-        // 查看结束时的状态
-        mmap_show_nodelist();        
+        
+        // 创建第一个用户进程并直接启动
+        proc_make_first();
+        
+        // proc_make_first() 内部会调用 trap_user_return()，不会返回
 
     } else {
 
@@ -58,19 +34,6 @@ int main()
         printf("cpu %d is booting!\n", cpuid);
         kvm_inithart();
         trap_kernel_inithart();
-
-        // 申请
-        for(int i = N_MMAP / 2; i < N_MMAP; i++)
-            mmap_list[i] = mmap_region_alloc();
-        over_2 = true;
-
-        // 屏障
-        while(over_1 == false || over_2 == false);
-
-        // 释放
-        for(int i = N_MMAP / 2; i < N_MMAP; i++)
-            mmap_region_free(mmap_list[i]);
-        over_4 = true;
     }
 
     while (1);

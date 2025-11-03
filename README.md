@@ -183,5 +183,240 @@ OKOS
 ![alt](pictures/测试2-2.png)
 
 
+## 任务3：mmap_region 资源仓库管理
+
+这个任务要解决的问题是：**如何让多个进程安全高效地共享 `mmap_region_t` 结构体资源？**
+
+### 为什么需要离散内存管理？
+
+应用程序除了堆和栈，还需要临时申请一些离散的内存块：
+- **栈**：无法手动释放，函数返回后自动回收
+- **堆**：适合管理大片连续空间，频繁申请释放会产生碎片化
+
+因此需要在堆和栈之间划分一个 **mmap区域** (`MMAP_BEGIN` ~ `MMAP_END`)，用链表管理离散的内存块。
+
+### 数据结构设计
+
+**1. mmap_region_t**: 描述一块已分配的连续地址空间
+```c
+typedef struct mmap_region {
+    uint64 begin;             // 起始地址
+    uint32 npages;            // 页面数量
+    struct mmap_region *next; // 链表指针
+} mmap_region_t;
+```
+
+**2. mmap_region_node_t**: 资源仓库中的包装节点
+```c
+typedef struct mmap_region_node {
+    mmap_region_t mmap;       // 内嵌 mmap_region_t
+    struct mmap_region_node *next; // 仓库链表指针
+} mmap_region_node_t;
+```
+
+**3. 全局资源仓库** (在 `mmap.c` 中):
+- `node_list[N_MMAP]`: 256个节点的静态数组
+- `list_head`: 空闲链表头节点（不可分配）
+- `list_lk`: 自旋锁，保证多核并发安全
+
+### 实现要点
+
+**1. mmap_init()**: 初始化资源仓库
+```c
+void mmap_init() {
+    spinlock_init(&list_lk, "mmap_node_list");
+    spinlock_acquire(&list_lk);
+    
+    // 将 node_list 串成空闲链
+    for (int i = 0; i < N_MMAP - 1; i++) {
+        node_list[i].next = &node_list[i + 1];
+    }
+    node_list[N_MMAP - 1].next = NULL;
+    list_head.next = &node_list[0];
+    
+    spinlock_release(&list_lk);
+}
+```
+- 将256个节点串成空闲链表
+- 初始化自旋锁
+- `list_head.next` 指向第一个可用节点
+
+**2. mmap_region_alloc()**: 从仓库申请节点
+```c
+mmap_region_t *mmap_region_alloc() {
+    spinlock_acquire(&list_lk);
+    
+    mmap_region_node_t *node = list_head.next;
+    if (node == NULL) {
+        spinlock_release(&list_lk);
+        panic("mmap_region_alloc: no free node");
+    }
+    list_head.next = node->next;
+    
+    spinlock_release(&list_lk);
+    
+    // 清空并返回
+    node->mmap.begin = 0;
+    node->mmap.npages = 0;
+    node->mmap.next = NULL;
+    return &node->mmap;
+}
+```
+- 加锁 → 从链表头取节点 → 解锁
+- 清空字段并返回指针
+- 仓库为空则 `panic`
+
+**3. mmap_region_free()**: 归还节点到仓库
+```c
+void mmap_region_free(mmap_region_t *mmap) {
+    if (mmap == NULL) return;
+    
+    mmap_region_node_t *node = (mmap_region_node_t *)mmap;
+    
+    // 清理字段（可选）
+    node->mmap.begin = 0;
+    node->mmap.npages = 0;
+    node->mmap.next = NULL;
+    
+    spinlock_acquire(&list_lk);
+    node->next = list_head.next;
+    list_head.next = node;
+    spinlock_release(&list_lk);
+}
+```
+- 清空 mmap 字段
+- 加锁 → 头插法插入链表 → 解锁
+- O(1) 复杂度
+
+### 核心设计理念
+
+- **对象池模式**: 预分配固定数量的节点，避免频繁的物理页分配
+- **空闲链表**: 已释放的节点不归还物理内存，加入空闲链表等待复用
+- **自旋锁保护**: 多核环境下保证资源申请/释放的原子性
+- **结构体嵌套技巧**: `mmap_region_t` 是 `mmap_region_node_t` 的首成员，地址相同，可直接指针转换
+
+### 踩过的坑
+
+- **指针转换**: `mmap_region_free()` 接收 `mmap_region_t*`，需转换为 `mmap_region_node_t*`
+  - 因为 `mmap` 是首成员，地址相同，可以直接强制转换：`(mmap_region_node_t *)mmap`
+- **锁的粒度**: 必须在访问 `list_head.next` 前后正确加锁/解锁
+- **边界检查**: `mmap_region_alloc()` 必须检查仓库是否为空
+
+## 测试3
+测试逻辑：双核并发申请和释放256个节点
+
+**测试代码** (在 `main.c` 中):
+- CPU0 申请节点 0~127，CPU1 申请节点 128~255
+- 同步屏障后再并发释放
+- 检查初始和最终状态的节点链表完整性
+
+**预期输出**:
+- 初始状态: `node 0 index = 0`, `node 1 index = 1`, ..., `node 255 index = 255`
+- 最终状态: 两股输出交替，node从0到255，一股index从255减到128，另一股index从127减到0
+
+![alt](pictures/测试3-1.png)
+![alt](pictures/测试3-2.png)
+
+
+## 任务4：mmap 与 munmap 系统调用
+
+这个任务实现用户态的离散内存管理，允许用户动态申请和释放 mmap 区域的内存。
+
+### 核心功能
+
+**sys_mmap(begin, len)**: 申请一块连续的内存空间
+- `begin=0`: 内核自动寻找第一个足够大的空闲区域
+- `begin!=0`: 在指定地址申请（需要页对齐）
+- `len`: 申请的字节数（必须是 PGSIZE 的倍数）
+
+**sys_munmap(begin, len)**: 释放指定地址范围的内存
+- 支持部分释放、完全释放、中间打洞等复杂情况
+- 自动处理链表节点的分裂和删除
+
+### 实现要点
+
+**1. uvm_mmap_find()**: 自动寻找空闲空间
+- 从 `MMAP_BEGIN` 开始扫描已分配区域之间的空隙
+- 返回第一个足够大的空闲区域起始地址
+- 同时返回插入位置的前后节点指针
+
+**2. uvm_mmap()**: 分配 mmap 区域
+
+核心步骤：
+- **查找位置**: `begin=0` 时调用 `uvm_mmap_find()`，否则在链表中找到插入位置
+- **创建节点**: 从资源仓库分配 `mmap_region_t`，设置 `begin`、`npages`
+- **插入链表**: 保持链表按地址有序
+- **合并相邻节点**: 
+  - 与前一个节点相邻 → 扩展前节点，释放新节点，**更新链表**
+  - 与后一个节点相邻 → 扩展新节点，释放后节点，**更新链表**
+- **分配物理页**: 调用 `pmem_alloc()` 并用 `vm_mappages()` 建立映射
+
+**关键点 - 合并时必须更新链表指针：**
+```c
+// 与前面合并
+last_mmap->npages += new_mmap->npages;
+last_mmap->next = new_mmap->next;  // ← 重要！
+mmap_region_free(new_mmap);
+
+// 与后面合并  
+new_mmap->npages += next_mmap->npages;
+new_mmap->next = next_mmap->next;  // ← 重要！
+mmap_region_free(next_mmap);
+```
+
+**3. uvm_munmap()**: 释放 mmap 区域
+
+需要处理4种情况：
+
+- **情况1 - 完全包含**: 解除整个节点的映射，从链表删除并释放节点
+- **情况2 - 覆盖前半**: 解除前半映射，修改节点 `begin` 和 `npages`
+- **情况3 - 覆盖后半**: 解除后半映射，修改节点 `npages`
+- **情况4 - 中间打洞**: 解除中间映射，分裂成两个节点
+
+**4. 系统调用实现**
+
+**sys_mmap()**:
+- 参数检查：`len` 和 `begin` 必须页对齐
+- 调用 `uvm_mmap(begin, npages, PTE_R|PTE_W|PTE_U)`
+- 打印调试信息和页表状态
+
+**sys_munmap()**:
+- 参数检查：`len` 和 `begin` 必须页对齐
+- 调用 `uvm_munmap(begin, npages)`
+- 打印调试信息和页表状态
+
+### 核心设计理念
+
+- **链表有序性**: mmap 链表始终按地址从低到高排序
+- **节点合并**: 相邻的节点自动合并，减少资源仓库的消耗
+- **资源复用**: 释放的 `mmap_region_t` 归还到资源仓库而非物理内存
+- **灵活释放**: 支持任意范围的 munmap，自动处理节点分裂
+
+### 踩过的坑
+
+- **合并后忘记更新链表指针**: 合并节点后如果不更新 `next` 指针，会导致链表结构破坏
+  - 症状：所有 mmap 区域显示相同的地址
+  - 解决：每次 `mmap_region_free()` 后必须更新前一个节点的 `next`
+  
+- **munmap 的边界情况**: 必须仔细处理 4 种覆盖情况，特别是中间打洞
+  - 需要分配新节点表示后半部分
+  - 需要正确连接链表
+
+- **物理页映射**: mmap 时必须分配物理页并建立映射，munmap 时必须解除映射并释放物理页
+
+## 测试4
+测试用例涵盖了 mmap/munmap 的各种复杂情况：
+- 指定地址的 mmap
+- 自动寻址的 mmap (`begin=0`)
+- 相邻节点自动合并
+- 部分释放、完全释放、中间打洞
+
+每次操作后都会打印：
+- 分配/释放的地址范围
+- 当前 mmap 链表状态（所有已分配区域）
+- 页表详细状态（三级页表结构）
+
+![alt](pictures/测试4-1.png)
+
 
 ## 实验感想
