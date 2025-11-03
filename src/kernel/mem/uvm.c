@@ -185,23 +185,109 @@ void uvm_munmap(uint64 begin, uint32 npages)
 // 用户堆空间增加, 返回新的堆顶地址 (注意栈顶最大值限制)
 uint64 uvm_heap_grow(pgtbl_t pgtbl, uint64 cur_heap_top, uint32 len) 
 {
-    // TODO: 任务2实现
-    return cur_heap_top;
+    if (len == 0) return cur_heap_top;
+
+    uint64 new_top = cur_heap_top + (uint64)len;
+
+    // 边界检查：堆不应越过 MMAP_BEGIN
+    if (new_top > MMAP_BEGIN) {
+        return (uint64)-1;
+    }
+
+    // 仅按页粒度分配新页面
+    uint64 page_start = (cur_heap_top + PGSIZE - 1) & ~(PGSIZE - 1); // 向上取整
+    uint64 page_end   = (new_top      + PGSIZE - 1) & ~(PGSIZE - 1); // 向上取整
+
+    for (uint64 va = page_start; va < page_end; va += PGSIZE) {
+        void *pa = pmem_alloc(false);
+        if (pa == NULL) {
+            // 回滚已分配部分
+            for (uint64 unmap = page_start; unmap < va; unmap += PGSIZE) {
+                vm_unmappages(pgtbl, unmap, PGSIZE, true);
+            }
+            return (uint64)-1;
+        }
+        vm_mappages(pgtbl, va, (uint64)pa, PGSIZE, PTE_R | PTE_W | PTE_U);
+    }
+
+    return new_top;
 }
 
 // 用户堆空间减少, 返回新的堆顶地址
 uint64 uvm_heap_ungrow(pgtbl_t pgtbl, uint64 cur_heap_top, uint32 len)
 {
-    // TODO: 任务2实现
-    return cur_heap_top;
+    if (len == 0) return cur_heap_top;
+
+    uint64 new_top = (cur_heap_top > len) ? (cur_heap_top - (uint64)len) : 0;
+
+    // 计算要释放的整页区间 [free_start, free_end)
+    uint64 free_start = (new_top + PGSIZE - 1) & ~(PGSIZE - 1); // 向上取整
+    uint64 free_end   = (cur_heap_top + PGSIZE - 1) & ~(PGSIZE - 1);
+
+    // 下界：不释放代码页（保护 USER_BASE 处的代码页）
+    uint64 min_heap_base = USER_BASE + PGSIZE; // 代码页结束位置
+    if (free_start < min_heap_base) free_start = min_heap_base;
+
+    for (uint64 va = free_start; va < free_end; va += PGSIZE) {
+        vm_unmappages(pgtbl, va, PGSIZE, true);
+    }
+
+    return new_top;
 }
 
 // 处理函数栈增长导致的page fault事件
 // 成功返回new_ustack_npage，失败返回-1
 uint64 uvm_ustack_grow(pgtbl_t pgtbl, uint64 old_ustack_npage, uint64 fault_addr)
 {
-    // TODO: 任务2实现
-    return -1;
+    // 合法性检查：栈向低地址增长；不得越过 MMAP_END；不得超过 TRAPFRAME
+    if (fault_addr >= TRAPFRAME || fault_addr < MMAP_END) {
+        return (uint64)-1;
+    }
+
+    // 当前已映射的栈区间：[stack_low, stack_top)
+    uint64 stack_top = TRAPFRAME; // 固定
+    uint64 stack_low = stack_top - old_ustack_npage * PGSIZE;
+
+    // 如果 fault 在已映射区间内，无需扩展
+    if (fault_addr >= stack_low && fault_addr < stack_top) {
+        return old_ustack_npage;
+    }
+
+    // 需要扩展到包含 fault 所在页
+    uint64 need_low = fault_addr & ~(PGSIZE - 1); // 向下取整到页
+
+    // 不得越过 MMAP_END
+    if (need_low < MMAP_END) {
+        need_low = MMAP_END;
+    }
+
+    // 计算扩展后的页数
+    uint64 new_npage = (stack_top - need_low + PGSIZE - 1) / PGSIZE;
+    if (new_npage <= old_ustack_npage) {
+        return old_ustack_npage;
+    }
+
+    // 为 [stack_low - add_size, stack_low) 区间分配页面
+    uint64 add_pages = new_npage - old_ustack_npage;
+    uint64 map_begin = stack_low - add_pages * PGSIZE;
+
+    if (map_begin < MMAP_END) {
+        return (uint64)-1;
+    }
+
+    for (uint64 va = map_begin; va < stack_low; va += PGSIZE) {
+        void *pa = pmem_alloc(false);
+        if (pa == NULL) {
+            // 回滚
+            for (uint64 unmap = map_begin; unmap < va; unmap += PGSIZE) {
+                vm_unmappages(pgtbl, unmap, PGSIZE, true);
+            }
+            return (uint64)-1;
+        }
+        vm_mappages(pgtbl, va, (uint64)pa, PGSIZE, PTE_R | PTE_W | PTE_U);
+    }
+
+    return new_npage;
 }
 
 /*----------------------part-4: 用户页表管理相关----------------------*/

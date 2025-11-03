@@ -56,6 +56,21 @@ void trap_user_handler()
 	        // 调用系统调用处理函数
 	        syscall();
 	        break;
+	    case 13: // Load Page Fault
+	    case 15: // Store/AMO Page Fault
+	    {
+	        uint64 stval = r_stval();
+	        printf("page fault occured! trap id = %d\n", trap_id);
+	        uint64 old_n = p->ustack_npage;
+	        uint64 new_n = uvm_ustack_grow(p->pgtbl, p->ustack_npage, stval);
+	        if (new_n == (uint64)-1) {
+	            printf("ustack grow failed: npage=%p, stval=%p\n", p->ustack_npage, stval);
+	            panic("trap_user_handler");
+	        }
+	        p->ustack_npage = new_n;
+	        printf("ustack_npage:  %d -> %d\n", (int)old_n, (int)new_n);
+	        break;
+	    }
 	    default:
 	        printf("unexpected user exception id=%d sepc=%p stval=%p\n", trap_id, tf->user_to_kern_epc, r_stval());
 	        panic("trap_user_handler");

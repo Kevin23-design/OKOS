@@ -18,6 +18,7 @@
     "C_Cpp.default.compilerPath": "/usr/bin/gcc",
     "files.associations": {
         "initcode.h": "c",
-        "mod.h": "c"
+        "mod.h": "c",
+        "sys.h": "c"
     }
 }

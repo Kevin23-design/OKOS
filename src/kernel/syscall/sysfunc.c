@@ -97,7 +97,53 @@ uint64 sys_copyinstr()
 */
 uint64 sys_brk()
 {
-    return -1;
+    proc_t *p = myproc();
+    uint64 new_top;
+
+    // 读取参数：new_heap_top（0 表示查询）
+    arg_uint64(0, &new_top);
+
+    uint64 cur = p->heap_top;
+
+    if (new_top == 0) {
+        // 查询当前堆顶
+        printf("look event: ret_heap_top = %p\n", cur);
+        vm_print(p->pgtbl);
+        return cur;
+    }
+
+    if (new_top == cur) {
+        // 不变
+        printf("equal event: ret_heap_top = %p\n", cur);
+        vm_print(p->pgtbl);
+        return cur;
+    }
+
+    if (new_top > cur) {
+        // 增长
+        uint64 ret = uvm_heap_grow(p->pgtbl, cur, (uint32)(new_top - cur));
+        if (ret == (uint64)-1) {
+            printf("grow event: ret_heap_top = %p\n", cur);
+            vm_print(p->pgtbl);
+            return (uint64)-1;
+        }
+        p->heap_top = ret;
+        printf("grow event: ret_heap_top = %p\n", ret);
+        vm_print(p->pgtbl);
+        return ret;
+    } else {
+        // 收缩
+        uint64 ret = uvm_heap_ungrow(p->pgtbl, cur, (uint32)(cur - new_top));
+        if (ret == (uint64)-1) {
+            printf("ungrow event: ret_heap_top = %p\n", cur);
+            vm_print(p->pgtbl);
+            return (uint64)-1;
+        }
+        p->heap_top = ret;
+        printf("ungrow event: ret_heap_top = %p\n", ret);
+        vm_print(p->pgtbl);
+        return ret;
+    }
 }
 
 /*

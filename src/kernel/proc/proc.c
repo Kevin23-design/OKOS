@@ -100,7 +100,7 @@ void proc_make_first()
     p->ctx.sp = KSTACK(0) + PGSIZE;  // 内核栈顶
     p->ctx.ra = (uint64)trap_user_return;  // 返回地址
 
-    // 当前CPU绑定该进程并切回用户
+    // 当前CPU绑定该进程
     cpu_t *c = mycpu();
     c->proc = p;
 
