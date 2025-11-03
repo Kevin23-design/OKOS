@@ -5,7 +5,7 @@
 2. 2025.10.20 张子扬初步完成实验，存在panic问题  
 3. 2025.10.23 王俊翔完善实验修改存在的错误版本 
 4. 2025.10.27 王俊翔完成测试二剩余部分
-
+5. 2025.11.03 张子扬、王俊翔完善README
 ## 代码组织结构
 ```
 OKOS
@@ -71,11 +71,11 @@ OKOS
         └── syscall_num.h (NEW)
 ```
 
-## 核心概念讲解
+## 核心知识
 
 ### 1. 进程控制块 (PCB) 结构
 
-进程控制块是操作系统管理进程的核心数据结构，在我们的实现中对应 `proc_t` 结构：
+>进程控制块是操作系统管理进程的核心数据结构，在我们的实现中对应 `proc_t` 结构：
 
 ```
 +----------------------+
@@ -92,9 +92,9 @@ OKOS
 +----------------------+
 ```
 
-### 2. Trapframe 结构详解
+### 2. Trapframe 结构
 
-Trapframe 保存用户态到内核态切换时的寄存器状态：
+>Trapframe 保存用户态到内核态切换时的寄存器状态：
 
 ```
 +----------------------+
@@ -113,37 +113,11 @@ Trapframe 保存用户态到内核态切换时的寄存器状态：
 +----------------------+
 ```
 
-## 实现思路
 
-本实验实现了从内核态到用户态的切换，核心思路如下：
 
-### 1. 进程管理框架
-- 在 [`proc.c`](OKOS/src/kernel/proc/proc.c) 中实现进程控制块 (proc_t) 管理
-- 创建第一个用户进程 `proczero`，负责执行 initcode
-- 实现进程上下文切换机制
+## 执行流程分析
 
-### 2. 用户地址空间构建
-- 用户页表构建在 [`proc_pgtbl_init()`](OKOS/src/kernel/proc/proc.c:32)
-- 关键映射：
-  - **Trampoline**: 映射到 `VA_MAX - PGSIZE`，用于用户-内核切换
-  - **Trapframe**: 映射到 `TRAMPOLINE - PGSIZE`，保存用户寄存器状态
-  - **用户栈**: 映射到 `TRAPFRAME - PGSIZE`
-  - **用户代码**: 映射到 `PGSIZE = 0x1000`
-
-### 3. 用户态执行入口
-- 在 [`proc_make_first()`](OKOS/src/kernel/proc/proc.c:65) 中设置：
-  - `p->tf->user_to_kern_epc = 0x102c` (initcode 入口点)
-  - 内核栈指针、trap 处理向量等关键信息
-
-### 4. 用户-内核切换机制
-- **Trampoline**: 在 [`trampoline.S`](OKOS/src/kernel/trap/trampoline.S) 中实现
-  - `user_vector`: 用户态 trap 进入内核
-  - `user_return`: 内核返回用户态
-- **Trap 处理**: 在 [`trap_user.c`](OKOS/src/kernel/trap/trap_user.c) 中实现系统调用处理
-
-## 执行流程详解
-
-### 1. 进程创建阶段 (`proc_make_first`)
+### 1. 进程创建阶段 ([`proc_make_first`](src/kernel/proc/proc.c#L59))
 
 **状态变化**:
 ```
@@ -151,26 +125,60 @@ Trapframe 保存用户态到内核态切换时的寄存器状态：
 ```
 
 **代码流程**:
+ 1. 分配 trapframe 内存
+ 2. 创建用户页表
+ 3. 映射用户栈和代码页
+ 4. 设置 trapframe 关键字段
+
+### 寻找用户程序逻辑入口地址：
+>虚拟地址映射：initcode 二进制被映射到用户虚拟页 PGSIZE = 0x1000，反汇编中偏移 0x2c 对应运行时地址 0x102c  
+
+源代码（嵌入的机器码数组）：  
+([`unsigned char target_user_initcode[]`](src/user/initcode.h)) 
+
+把以上的汇编翻译成C的伪代码如下，方便理解分析：
 ```c
-// 1. 分配 trapframe 内存
-p->tf = pmem_alloc(true);
-
-// 2. 创建用户页表
-p->pgtbl = proc_pgtbl_init((uint64)p->tf);
-
-// 3. 映射用户栈和代码页
-vm_mappages(p->pgtbl, USTACK, ustack_pa, PGSIZE, PTE_R|PTE_W|PTE_U);
-vm_mappages(p->pgtbl, PGSIZE, ucode_pa, PGSIZE, PTE_R|PTE_X|PTE_U);
-
-// 4. 设置 trapframe 关键字段
-p->tf->user_to_kern_epc = 0x102c;  // 用户程序入口
-p->tf->sp = USTACK + PGSIZE;       // 用户栈顶
-
-// 5. 切换到用户态
-trap_user_return();
+// 地址 0x1000 + 0x0（反汇编偏移 0x0）
+// helper routine，作用：把传入的参数放到 a7，然后触发 ecall，返回 a0
+long helper(long arg /* in a0 */) {
+    // prologue: push/alloc frame (sp -= 32), save s0, set fp
+    // sd x8, 24(sp); fp = sp + 32;
+    // store arg into frame: store a0 at frame offset
+    long saved_arg = arg;           // sd x10, -24(fp)
+    long a7 = saved_arg;            // ld x17, -24(fp) -> x17 = a7
+    // syscall:
+    syscall();                      // ecall
+    // after ecall: move return into a0 as needed (mv x15,x10; mv x10,x15)
+    long ret = /* a0 after ecall */;
+    // epilogue: restore s0, free frame, return
+    return ret;                     // ret
+}
+// 地址 0x1000 + 0x2c（反汇编偏移 0x2c）
+// main entry，程序入口，从这里开始执行（所以 EPC 要指向这里）
+int main(void) {
+    // prologue: sp -= 16; save ra, save s0; fp = sp + 16
+    // prepare first call
+    long a0 = 0;
+    helper(a0);      // auipc + jalr -> 调用 helper 位于同一页的 0x0 处 (位置无关调用)
+    // prepare second call
+    a0 = 0;
+    helper(a0);      // 再一次调用 helper
+    // finished: busy loop
+    for(;;) { /* spin */ }  // j 0x54
+}
 ```
 
-### 2. 用户态返回阶段 (`trap_user_return`)
+### 为什么要[`p->tf->user_to_kern_epc = USER_BASE + INITCODE_ENTRY_OFFSET`](src/kernel/proc/proc.c#L95)？
+
+- 用户代码页被映射到 `USER_BASE`（`#define USER_BASE (PGSIZE)`，即 0x1000）。
+- `initcode` 是嵌入到内核的用户程序机器码（由 `user/initcode.c` 生成并经由 `initcode.h` 引入），加载时从该页的起始处拷贝到物理页，再以 `PTE_R|PTE_X|PTE_U` 映射到用户虚拟地址 `USER_BASE`。
+- 反汇编可以看到真正的“程序入口”在该页内偏移 `0x2c` 处（helper 在 0x0，main 在 0x2c）。因此运行时入口虚拟地址应为 `USER_BASE + 0x2c`。
+- `trap_user_return()` 会把 `tf->user_to_kern_epc` 写入 `sepc`，随后执行 `sret` 返回用户态，从而从该虚拟地址开始取指执行。
+
+
+后续可能出现的问题：该偏移取决于当前 `initcode` 的内容与编译结果，若用户程序发生结构性变更（例如新增 prologue），入口偏移可能变化，需相应更新 `INITCODE_ENTRY_OFFSET`（或改为通过符号导出入口地址以避免硬编码）。
+
+### 2. 用户态返回阶段 ([`trap_user_return`](src/kernel/trap/trap_user.c#L72))
 
 **状态变化**:
 ```
@@ -181,29 +189,15 @@ trap_user_return();
 - `stvec`: 指向 trampoline 的 `user_vector`
 - `sscratch`: 设置为 `TRAPFRAME` 虚拟地址
 - `sstatus`: 清除 SPP，设置 SPIE
-- `sepc`: 设置为 `0x102c` (用户程序入口)
-
+- `sepc`: 设置为 `USER_BASE + INITCODE_ENTRY_OFFSET`
+- 
 ### 3. 用户程序执行阶段
 
 **状态变化**:
 ```
 用户态执行 → 调用 helper(0) → 执行 ecall → 触发 trap
 ```
-
-**用户程序流程**:
-```c
-main() {
-    helper(0);  // 第一次系统调用
-    helper(0);  // 第二次系统调用
-    while(1);   // 无限循环
-}
-
-helper(arg) {
-    a7 = arg;   // 设置系统调用号
-    ecall;      // 触发系统调用
-    return a0;  // 返回系统调用结果
-}
-```
+也就是用户态的main函数，调用两次syscall, "helloworld"。  
 
 ### 4. 系统调用处理阶段
 
@@ -246,115 +240,7 @@ helper(arg) {
    - 切换到用户页表
    - 执行 `sret` 返回用户程序
 
-## 关键代码片段
 
-### 1. 进程创建与初始化 ([`proc.c`](OKOS/src/kernel/proc/proc.c:65))
-```c
-void proc_make_first()
-{
-    // 分配 trapframe
-    p->tf = (trapframe_t *)pmem_alloc(true);
-    
-    // 创建用户页表
-    p->pgtbl = proc_pgtbl_init((uint64)p->tf);
-    
-    // 映射用户栈和代码页
-    vm_mappages(p->pgtbl, USTACK, (uint64)ustack_pa, PGSIZE, PTE_R | PTE_W | PTE_U);
-    vm_mappages(p->pgtbl, PGSIZE, (uint64)ucode_pa, PGSIZE, PTE_R | PTE_X | PTE_U);
-    
-    // 设置 trapframe 关键字段
-    p->tf->user_to_kern_epc = PGSIZE + INITCODE_ENTRY_OFFSET;  // 0x102c
-    p->tf->sp = USTACK + PGSIZE;  // 用户栈顶
-    
-    // 切换到用户态
-    trap_user_return();
-}
-```
-
-### 2. 用户态返回 ([`trap_user.c`](OKOS/src/kernel/trap/trap_user.c:76))
-```c
-void trap_user_return()
-{
-    // 设置 stvec 指向 trampoline
-    w_stvec(uservec_va);
-    
-    // 设置 sscratch 为 TRAPFRAME 地址
-    w_sscratch((uint64)TRAPFRAME);
-    
-    // 设置 sstatus 为 U-mode
-    s &= ~SSTATUS_SPP;
-    s |= SSTATUS_SPIE;
-    w_sstatus(s);
-    
-    // 设置 sepc 为用户程序入口
-    w_sepc(tf->user_to_kern_epc);
-    
-    // 跳转到 trampoline 执行返回
-    ureturn((trapframe_t *)TRAPFRAME, MAKE_SATP(p->pgtbl));
-}
-```
-
-### 3. 系统调用处理 ([`trap_user.c`](OKOS/src/kernel/trap/trap_user.c:25))
-```c
-void trap_user_handler()
-{
-    // 识别 U-mode ecall (scause = 8)
-    if (trap_id == 8) {
-        tf->user_to_kern_epc += 4;  // 跳过 ecall 指令
-        if (tf->a7 == 0) {
-            printf("proczero: hello world\n");
-        }
-    }
-}
-```
-
-### 寻找initcode入口：
-虚拟地址映射：initcode 二进制被映射到用户虚拟页 PGSIZE = 0x1000，反汇编中偏移 0x2c 对应运行时地址 0x102c
-
-```c
-unsigned char target_user_initcode[] = {
-  0x13, 0x01, 0x01, 0xfe, 0x23, 0x3c, 0x81, 0x00, 0x13, 0x04, 0x01, 0x02,
-  0x23, 0x34, 0xa4, 0xfe, 0x83, 0x38, 0x84, 0xfe, 0x73, 0x00, 0x00, 0x00,
-  0x93, 0x07, 0x05, 0x00, 0x13, 0x85, 0x07, 0x00, 0x03, 0x34, 0x81, 0x01,
-  0x13, 0x01, 0x01, 0x02, 0x67, 0x80, 0x00, 0x00, 0x13, 0x01, 0x01, 0xff,
-  0x23, 0x34, 0x11, 0x00, 0x23, 0x30, 0x81, 0x00, 0x13, 0x04, 0x01, 0x01,
-  0x13, 0x05, 0x00, 0x00, 0x97, 0x00, 0x00, 0x00, 0xe7, 0x80, 0x00, 0xfc,
-  0x13, 0x05, 0x00, 0x00, 0x97, 0x00, 0x00, 0x00, 0xe7, 0x80, 0x40, 0xfb,
-  0x6f, 0x00, 0x00, 0x00
-};
-```
-
-把以上的汇编翻译成C的伪代码如下，方便理解分析：
-```c
-// 地址 0x1000 + 0x0（反汇编偏移 0x0）
-// helper routine，作用：把传入的参数放到 a7，然后触发 ecall，返回 a0
-long helper(long arg /* in a0 */) {
-    // prologue: push/alloc frame (sp -= 32), save s0, set fp
-    // sd x8, 24(sp); fp = sp + 32;
-    // store arg into frame: store a0 at frame offset
-    long saved_arg = arg;           // sd x10, -24(fp)
-    long a7 = saved_arg;            // ld x17, -24(fp) -> x17 = a7
-    // syscall:
-    syscall();                      // ecall
-    // after ecall: move return into a0 as needed (mv x15,x10; mv x10,x15)
-    long ret = /* a0 after ecall */;
-    // epilogue: restore s0, free frame, return
-    return ret;                     // ret
-}
-// 地址 0x1000 + 0x2c（反汇编偏移 0x2c）
-// main entry，程序入口，从这里开始执行（所以 EPC 要指向这里）
-int main(void) {
-    // prologue: sp -= 16; save ra, save s0; fp = sp + 16
-    // prepare first call
-    long a0 = 0;
-    helper(a0);      // auipc + jalr -> 调用 helper 位于同一页的 0x0 处 (位置无关调用)
-    // prepare second call
-    a0 = 0;
-    helper(a0);      // 再一次调用 helper
-    // finished: busy loop
-    for(;;) { /* spin */ }  // j 0x54
-}
-```
 
 ## 测试样例
 ![alt image](pictures/测试helloworld_time_uart.png)
@@ -362,65 +248,18 @@ int main(void) {
 1.  验证系统调用功能：
     *   创建并运行第一个用户进程 `proczero`。
     *   `proczero` 执行的用户程序 (`initcode.c`) 会发起两次 `SYS_helloworld` 系统调用。
-    *   内核捕获到这个来自用户态的 `ecall` 异常后，会进行处理，并打印出 "proczero: hello world!"。
-    *   这个测试证明了用户进程能够通过系统调用与内核进行交互，并获得内核提供的服务。
 
 2.  **验证用户态下的中断处理**：
-    *   在用户进程 `proczero` 运行时，测试系统是否还能正确响应外部中断——时钟中断和串口中断。
-    *   这确保了在引入用户态后，原有的中断处理机制依然能够正常工作，CPU可以从用户态正确陷入内核来响应中断，并在处理完毕后返回用户态继续执行。
+    *   在用户进程 `proczero` 运行时，系统能正确响应——时钟中断: tick计数器的变化。（tick=100, tick=200...）
+    *   在用户进程 `proczero` 运行时，系统能正确响应——串口中断: 其他字符（test, balal, balabala等字符）
 
 总而言之，测试样例验证了从内核态到用户态的切换、用户进程的执行、系统调用的完整处理流程以及在用户态下中断响应的正确性。
 
 ## 五、设计取舍与反思
 
-### 1. 入口点选择的理解
-- **正确选择**: 偏移 `0x2c` 作为入口点，而不是 `0x0`
-- **原因分析**: `0x0` 是 helper 函数，负责系统调用封装；`0x2c` 是 main 函数，是用户程序的逻辑入口
-- **验证**: 在 [`proc_make_first()`](OKOS/src/kernel/proc/proc.c:102) 中正确设置 `user_to_kern_epc = 0x102c`
+- 从 CSAPP 的“异常控制流”到 OS 的“trap/中断/系统调用”
+    - CSAPP 里把系统调用看作一种异常控制流（ECF），这次实验里亲手把这条链路打通：U-mode 执行 ecall → sepc/scause 自动更新 → 跳到 `stvec` 的 trampoline → 保存寄存器到 `trapframe` → 进入内核的 `trap_user_handler` → 处理后返回 `trap_user_return` → `sret` 回到用户。教材里的概念，变成了寄存器级别、地址级别的真实实现。
+- 初始用户入口与 initcode 布局：
+    - xv6：`initcode.S` 链接在 VA=0 起始，入口通常为 0；内核把 `p->trapframe->epc` 设为 0 后返回用户，随后 `initcode` 会 `exec("/init")` 拉起真正的 init。
+    - 本实现：把用户代码页映射到 `USER_BASE=0x1000`，入口是页内偏移 `0x2c`，即 `USER_BASE + 0x2c = 0x102c`；用“页基址+页内偏移”的表达替代写死绝对地址。
 
-### 2. 地址空间布局设计
-- **用户空间布局**:
-  ```
-  高地址: TRAMPOLINE (0x3fffffe000) - 用户-内核切换代码
-          TRAPFRAME  (0x3fffffd000)  - 用户寄存器保存区
-          USTACK     (0x3fffffc000)  - 用户栈
-          ...
-          CODE+DATA  (0x00001000)    - 用户代码和数据
-  低地址: 未映射区域 (0x00000000)     - 防止空指针访问
-  ```
-- **设计优势**: 符合 RISC-V 标准，隔离性好，便于内存管理
-
-### 3. 用户-内核切换机制
-- **Trampoline 设计**: 在 [`trampoline.S`](OKOS/src/kernel/trap/trampoline.S) 中实现
-  - 优点: 代码位置固定，页表切换安全
-  - 挑战: 寄存器保存/恢复的精确性
-- **Trapframe 设计**: 在 [`trap_user.c`](OKOS/src/kernel/trap/trap_user.c) 中管理
-  - 包含完整的用户寄存器状态
-  - 保存内核执行环境信息
-
-### 4. 系统调用流程优化
-- **硬件自动操作**:
-  - 保存 `sepc` (发生 trap 的用户 PC)
-  - 设置 `scause` (trap 原因)
-  - 跳转到 `stvec` 指向地址
-- **软件处理流程**:
-  - Trampoline 保存用户寄存器
-  - 内核处理系统调用
-  - 恢复用户状态并返回
-
-### 5. 关键调试经验
-- **入口点确认**: 通过反汇编分析确认 `0x102c` 是正确入口
-- **寄存器保存**: 确保 trampoline 中所有寄存器正确保存/恢复
-- **页表切换**: 在 trampoline 中安全切换页表，避免地址失效
-
-### 6. 设计反思
-- **成功之处**:
-  - 完整的用户-内核切换机制
-  - 清晰的地址空间隔离
-  - 稳定的系统调用流程
-- **改进空间**:
-  - 可扩展更多系统调用类型
-  - 优化 trampoline 性能
-  - 增强错误处理和调试信息
-
-通过本次实验，深入理解了操作系统用户态与内核态的切换机制，掌握了 RISC-V 架构下的 trap 处理流程，为后续的多进程管理和系统调用扩展奠定了基础。
