@@ -21,7 +21,7 @@ extern void trap_user_return();
 static proc_t proczero;
 
 // initcode entry 偏移（相对于页面基址 PGSIZE）
-#define INITCODE_ENTRY_OFFSET 0x2c
+#define INITCODE_ENTRY_OFFSET 0x0
 
 // 获得一个初始化过的用户页表
 // 完成trapframe和trampoline的映射

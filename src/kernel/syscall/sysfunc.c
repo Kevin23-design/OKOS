@@ -8,6 +8,31 @@
 */
 uint64 sys_copyin()
 {
+    proc_t *p = myproc();
+    uint64 addr;
+    uint32 len;
+    
+    // 读取参数
+    arg_uint64(0, &addr);
+    arg_uint32(1, &len);
+    
+    // 分配内核缓冲区
+    int *kernel_buf = (int *)pmem_alloc(true);
+    if (kernel_buf == NULL) {
+        return -1;
+    }
+    
+    // 从用户空间拷贝数据到内核空间
+    uvm_copyin(p->pgtbl, (uint64)kernel_buf, addr, len * sizeof(int));
+    
+    // 打印数据验证（按照实验要求的格式）
+    for (uint32 i = 0; i < len; i++) {
+        printf("get a number from user: %d\n", kernel_buf[i]);
+    }
+    
+    // 释放内核缓冲区
+    pmem_free((uint64)kernel_buf, true);
+    
     return 0;
 }
 
@@ -18,7 +43,20 @@ uint64 sys_copyin()
 */
 uint64 sys_copyout()
 {
-	return 0;
+    proc_t *p = myproc();
+    uint64 addr;
+    
+    // 读取参数
+    arg_uint64(0, &addr);
+    
+    // 准备要发送的数据
+    int kernel_data[5] = {1, 2, 3, 4, 5};
+    uint32 len = 5;
+    
+    // 从内核空间拷贝数据到用户空间
+    uvm_copyout(p->pgtbl, addr, (uint64)kernel_data, len * sizeof(int));
+    
+    return len;
 }
 
 /*
@@ -28,6 +66,27 @@ uint64 sys_copyout()
 */
 uint64 sys_copyinstr()
 {
+    proc_t *p = myproc();
+    uint64 addr;
+    
+    // 读取参数
+    arg_uint64(0, &addr);
+    
+    // 分配内核缓冲区
+    char *kernel_buf = (char *)pmem_alloc(true);
+    if (kernel_buf == NULL) {
+        return -1;
+    }
+    
+    // 从用户空间拷贝字符串到内核空间
+    uvm_copyin_str(p->pgtbl, (uint64)kernel_buf, addr, PGSIZE);
+    
+    // 打印字符串验证（按照实验要求的格式）
+    printf("get string for user: %s\n", kernel_buf);
+    
+    // 释放内核缓冲区
+    pmem_free((uint64)kernel_buf, true);
+    
     return 0;
 }
 

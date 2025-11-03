@@ -15,7 +15,8 @@ void mmap_init()
 // 若仓库空了则 panic
 mmap_region_t *mmap_region_alloc()
 {
-
+    // TODO: 任务3实现
+    return NULL;
 }
 
 // 向仓库归还一个 mmap_region_t

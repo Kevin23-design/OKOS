@@ -52,11 +52,9 @@ void trap_user_handler()
 	    case 8: // ecall from U-mode
 	        // 保存用户程序的返回地址（ecall指令的下一条指令）
 	        tf->user_to_kern_epc += 4; // 跳过 ecall
-	        if (tf->a7 == 0) {
-	            printf("proczero: hello world\n");
-	        } else {
-	            printf("unknown syscall %d\n", (int)tf->a7);
-	        }
+	        
+	        // 调用系统调用处理函数
+	        syscall();
 	        break;
 	    default:
 	        printf("unexpected user exception id=%d sepc=%p stval=%p\n", trap_id, tf->user_to_kern_epc, r_stval());
