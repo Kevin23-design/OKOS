@@ -158,7 +158,15 @@ uint64 sys_munmap()
 */
 uint64 sys_print_str()
 {
-
+    uint64 user_str;
+    arg_uint64(0, &user_str);
+    
+    // 从用户空间拷贝字符串到内核空间
+    char buf[256];
+    uvm_copyin_str(myproc()->pgtbl, (uint64)buf, user_str, 256);
+    
+    printf("%s", buf);
+    return 0;
 }
 
 /*
@@ -168,7 +176,11 @@ uint64 sys_print_str()
 */
 uint64 sys_print_int()
 {
-
+    uint32 num;
+    arg_uint32(0, &num);
+    
+    printf("%d", num);
+    return 0;
 }
 
 /*
@@ -177,7 +189,7 @@ uint64 sys_print_int()
 */
 uint64 sys_fork()
 {
-
+    return proc_fork();
 }
 
 /*
@@ -186,7 +198,10 @@ uint64 sys_fork()
 */
 uint64 sys_wait()
 {
-
+    uint64 user_addr;
+    arg_uint64(0, &user_addr);
+    
+    return proc_wait(user_addr);
 }
 
 /*
@@ -196,17 +211,27 @@ uint64 sys_wait()
 */
 uint64 sys_exit()
 {
-
+    uint32 exit_code;
+    arg_uint32(0, &exit_code);
+    
+    proc_exit((int)exit_code);
+    
+    // 永远不会执行到这里
+    return 0;
 }
 
 /*
-    让进程睡眠一段时间
+    进程睡眠
     uint32 ntick (1个tick大约0.1秒)
     成功返回0
 */
 uint64 sys_sleep()
 {
-
+    uint32 ntick;
+    arg_uint32(0, &ntick);
+    
+    timer_wait(ntick);
+    return 0;
 }
 
 /*
@@ -214,5 +239,5 @@ uint64 sys_sleep()
 */
 uint64 sys_getpid()
 {
-
+    return myproc()->pid;
 }

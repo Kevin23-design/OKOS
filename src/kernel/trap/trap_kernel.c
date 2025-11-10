@@ -116,6 +116,16 @@ void trap_kernel_handler()
             panic("trap_kernel_handler");
         }
     }
+    
+    // 如果是时钟中断导致的trap,在内核态中也要强制进程让出CPU
+    // 实现抢占式调度: 无论进程在用户态还是内核态,时钟中断都会导致调度
+    if ((scause & 0x8000000000000000ul) && trap_id == 1) {
+        // 只有当前有进程在运行时才需要yield
+        // (调度器运行时myproc()返回NULL)
+        if (myproc() != NULL) {
+            proc_yield();
+        }
+    }
 }
 
 // 外设中断处理 (基于PLIC，lab-3只需要识别和处理UART中断)

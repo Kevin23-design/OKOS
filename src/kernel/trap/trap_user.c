@@ -76,6 +76,12 @@ void trap_user_handler()
 	        panic("trap_user_handler");
 	    }
 	}
+	
+	// 如果是时钟中断导致的trap,在返回用户态前强制进程让出CPU
+	// 实现抢占式调度: 每个进程只能执行一个时间片
+	if ((scause & 0x8000000000000000ul) && trap_id == 1) {
+	    proc_yield();
+	}
 
 	trap_user_return();
 }
@@ -85,7 +91,13 @@ void trap_user_handler()
 void trap_user_return()
 {
 	proc_t *p = myproc();
+	assert(p != NULL, "trap_user_return: myproc() returned NULL");
 	trapframe_t *tf = p->tf;
+
+	// 更新用于下一次陷阱进入时恢复的关键内核上下文信息。
+	// 尤其是 user_to_kern_hartid, 需要反映当前CPU编号, 否则当进程在不同CPU上运行时
+	// 会使用错误的cpus[]槽位, 导致push_off/pop_off计数失衡进而panic。
+	tf->user_to_kern_hartid = mycpuid();
 
 	// stvec -> 用户向量（高地址）
 	uint64 uservec_va = TRAMPOLINE + ((uint64)user_vector - (uint64)trampoline);

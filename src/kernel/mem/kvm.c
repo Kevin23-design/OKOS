@@ -146,10 +146,12 @@ void kvm_init()
     extern char trampoline[];
     vm_mappages(kernel_pgtbl, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
 
-    // KSTACK(0): 进程0的内核栈映射（2个页面）
-    void *kstack0_pa = pmem_alloc(false);
-    if (kstack0_pa == NULL) panic("kvm_init: alloc kstack0 failed");
-    vm_mappages(kernel_pgtbl, KSTACK(0), (uint64)kstack0_pa, 2 * PGSIZE, PTE_R | PTE_W);
+    // 为所有进程分配和映射内核栈（每个进程 2 个页面）
+    for (int i = 0; i < N_PROC; i++) {
+        void *kstack_pa = pmem_alloc(false);
+        if (kstack_pa == NULL) panic("kvm_init: alloc kstack failed");
+        vm_mappages(kernel_pgtbl, KSTACK(i), (uint64)kstack_pa, 2 * PGSIZE, PTE_R | PTE_W);
+    }
 }
 
 // 每个CPU都需要调用, 从不使用页表切换到使用内核页表

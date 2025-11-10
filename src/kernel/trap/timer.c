@@ -60,6 +60,10 @@ void timer_update()
     spinlock_acquire(&sys_timer.lk);
     sys_timer.ticks++;
     spinlock_release(&sys_timer.lk);
+    
+    // 唤醒所有等待sys_timer的进程
+    // 这些进程会检查是否已经到达目标时间
+    proc_wakeup(&sys_timer);
 }
 
 // 获取滴答数量 (不把sys_timer暴露出去, 只提供安全的访问接口)
@@ -75,5 +79,19 @@ uint64 timer_get_ticks()
 // 让进程睡眠ntick个时钟周期
 void timer_wait(uint64 ntick)
 {
-
+    // 获取当前时间
+    spinlock_acquire(&sys_timer.lk);
+    uint64 target_ticks = sys_timer.ticks + ntick;
+    
+    // 循环睡眠直到到达目标时间
+    while (sys_timer.ticks < target_ticks) {
+        // 以sys_timer为资源进入睡眠
+        // proc_sleep会释放sys_timer.lk,然后在被唤醒后重新获取
+        proc_sleep(&sys_timer, &sys_timer.lk);
+        
+        // 被唤醒后,检查是否到达目标时间
+        // 如果没到,继续睡眠
+    }
+    
+    spinlock_release(&sys_timer.lk);
 }
