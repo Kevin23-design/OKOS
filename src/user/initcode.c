@@ -1,39 +1,98 @@
-// in initcode.c
+// test-1: sys_getpid and sys_print
 #include "sys.h"
-
-// 与内核保持一致
-#define VA_MAX       (1ul << 38)
-#define PGSIZE       4096
-#define MMAP_END     (VA_MAX - (16 * 256 + 2) * PGSIZE)
-#define MMAP_BEGIN   (MMAP_END - 64 * 256 * PGSIZE)
 
 int main()
 {
-    // —— 功能性测试：验证跨页读写与 copyin/copyout ——
-    // 1) 申请两页匿名映射（自动分配），返回起始地址
-    unsigned long long mm = (unsigned long long)syscall(SYS_mmap, 0, 2 * PGSIZE);
-
-    // 2) 在跨页边界处写入 8 个 int，随后让内核使用 sys_copyin 打印出来
-    //    基址选择在第1页末尾，使得这8个元素跨越两页
-    volatile int *cross = (int *)(mm + PGSIZE - 8 * sizeof(int));
-    for (int i = 0; i < 8; i++) {
-        cross[i] = 1000 + i; // 1000..1007
-    }
-    syscall(SYS_copyin, (unsigned long long)cross, (unsigned long)8);
-
-    // 3) 让内核往该地址写入 5 个整数（1..5），再用 sys_copyin 读回并打印验证
-    syscall(SYS_copyout, (unsigned long long)cross);
-    syscall(SYS_copyin, (unsigned long long)cross, (unsigned long)5);
-
-    // 4) 解除第二页映射，验证页表变化（仅通过内核侧 vm_print/mmaplist 打印）
-    syscall(SYS_munmap, mm + PGSIZE, PGSIZE);
-
-    // 5) 再次在原位置映射一页，随后用 sys_copyout 写入并用 sys_copyin 打印，验证恢复可用
-    syscall(SYS_mmap, mm + PGSIZE, PGSIZE);
-    volatile int *pg2 = (int *)(mm + PGSIZE);
-    syscall(SYS_copyout, (unsigned long long)pg2);
-    syscall(SYS_copyin, (unsigned long long)pg2, (unsigned long)5);
-
-    while(1);
-    return 0;
+	int pid = syscall(SYS_getpid);
+	if (pid == 1) {
+		syscall(SYS_print_str, "\nproczero: hello ");
+		syscall(SYS_print_str, "world!\n");
+	}
+	while (1);	
 }
+
+
+
+// test-2: fork
+// #include "sys.h"
+
+// int main()
+// {
+// 	syscall(SYS_print_str, "level-1!\n");
+// 	syscall(SYS_fork);
+// 	syscall(SYS_print_str, "level-2!\n");
+// 	syscall(SYS_fork);
+// 	syscall(SYS_print_str, "level-3!\n");
+// 	while(1);
+// }
+
+
+// test-3: fork wait exit 综合测试
+// #include "sys.h"
+
+// #define PGSIZE 4096
+// #define VA_MAX (1ul << 38)
+// #define MMAP_END (VA_MAX - (2 + 16 * 256) * PGSIZE)
+// #define MMAP_BEGIN (MMAP_END - 64 * 256 * PGSIZE)
+
+// int main()
+// {
+// 	int pid, i;
+// 	char *str1, *str2, *str3 = "STACK_REGION\n\n";
+// 	char *tmp1 = "MMAP_REGION\n", *tmp2 = "HEAP_REGION\n";
+	
+// 	str1 = (char*)syscall(SYS_mmap, MMAP_BEGIN, PGSIZE);
+// 	for (i = 0; tmp1[i] != '\0'; i++)
+// 		str1[i] = tmp1[i];
+// 	str1[i] = '\0';	
+
+// 	str2 = (char*)syscall(SYS_brk, 0);
+// 	syscall(SYS_brk, (long long int)str2 + PGSIZE);
+// 	for (i = 0; tmp2[i] != '\0'; i++)
+// 		str2[i] = tmp2[i];
+// 	str2[i] = '\0';	
+
+// 	syscall(SYS_print_str, "\n--------test begin--------\n");
+// 	pid = syscall(SYS_fork);
+
+// 	if (pid == 0) { // 子进程
+// 		syscall(SYS_print_str, "child proc: hello!\n");
+// 		syscall(SYS_print_str, str1);
+// 		syscall(SYS_print_str, str2);
+// 		syscall(SYS_print_str, str3);
+// 		syscall(SYS_exit, 1234);
+// 	} else { // 父进程
+// 		int exit_state = 0;
+// 		syscall(SYS_wait, &exit_state);
+// 		syscall(SYS_print_str, "parent proc: hello!\n");
+// 		syscall(SYS_print_int, pid);
+// 		if (exit_state == 1234)
+// 			syscall(SYS_print_str, "good boy!\n");
+// 		else
+// 			syscall(SYS_print_str, "bad boy!\n"); 
+// 	}
+
+// 	syscall(SYS_print_str, "--------test end----------\n");
+
+// 	while (1);
+	
+// 	return 0;
+// }
+
+// test-4: sleep
+// #include "sys.h"
+
+// int main()
+// {
+// 	int pid = syscall(SYS_fork);
+// 	if (pid == 0) {
+// 		syscall(SYS_print_str, "Ready to sleep!\n");
+// 		syscall(SYS_sleep, 30);
+// 		syscall(SYS_print_str, "Ready to exit!\n");
+// 		syscall(SYS_exit, 0);
+// 	} else {
+// 		syscall(SYS_wait, 0);
+// 		syscall(SYS_print_str, "Child exit!\n");
+// 	}
+// 	while(1);
+// }
