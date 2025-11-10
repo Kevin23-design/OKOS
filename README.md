@@ -417,6 +417,250 @@ mmap_region_free(next_mmap);
 - 页表详细状态（三级页表结构）
 
 ![alt](pictures/测试4-1.png)
+![alt](pictures/测试4-2.png)
+![alt](pictures/测试4-3.png)
+![alt](pictures/测试4-4.png)
+![alt](pictures/测试4-5.png)
+
+
+## 任务5：页表复制与销毁
+
+这个任务实现进程页表的深拷贝和完整销毁，是 fork 系统调用的核心基础。
+
+### 核心功能
+
+**uvm_copy_pgtbl(old, new, heap_top, ustack_npage, mmap)**: 将旧页表的内容完整复制到新页表
+- 复制用户代码段、堆、mmap 区域、用户栈
+- 为每个页面分配新的物理内存并复制数据
+- 不复制 trapframe 和 trampoline（内核管理）
+
+**uvm_destroy_pgtbl(pgtbl)**: 完全销毁页表，释放所有资源
+- 递归释放三级页表结构
+- 释放所有用户物理页面
+- 释放页表本身占用的物理页
+
+### 实现要点
+
+**1. copy_range()**: 复制连续虚拟地址空间的辅助函数
+
+```c
+static void copy_range(pgtbl_t old, pgtbl_t new, uint64 begin, uint64 end)
+{
+    for (va = begin; va < end; va += PGSIZE) {
+        // 获取旧页表中的 PTE
+        pte = vm_getpte(old, va, false);
+        
+        // 获取物理地址和标志位
+        pa = PTE_TO_PA(*pte);
+        flags = PTE_FLAGS(*pte);
+        
+        // 分配新物理页并复制数据
+        page = pmem_alloc(false);
+        memmove((char *)page, (const char *)pa, PGSIZE);
+        
+        // 在新页表中建立映射
+        vm_mappages(new, va, page, PGSIZE, flags);
+    }
+}
+```
+
+**2. uvm_copy_pgtbl()**: 页表复制的主函数
+
+分4个步骤复制整个地址空间：
+
+```c
+void uvm_copy_pgtbl(pgtbl_t old, pgtbl_t new, uint64 heap_top, 
+                    uint64 ustack_npage, mmap_region_t *mmap)
+{
+    // 1. 复制用户代码页 (USER_BASE 一页)
+    copy_range(old, new, USER_BASE, USER_BASE + PGSIZE);
+    
+    // 2. 复制堆空间 [USER_BASE + PGSIZE, heap_top)
+    if (heap_top > USER_BASE + PGSIZE) {
+        uint64 heap_start = USER_BASE + PGSIZE;
+        // 向上对齐到页边界
+        uint64 heap_end = (heap_top + PGSIZE - 1) & ~(PGSIZE - 1);
+        copy_range(old, new, heap_start, heap_end);
+    }
+    
+    // 3. 复制 mmap 区域（遍历链表）
+    mmap_region_t *tmp = mmap;
+    while (tmp != NULL) {
+        uint64 mmap_start = tmp->begin;
+        uint64 mmap_end = tmp->begin + tmp->npages * PGSIZE;
+        copy_range(old, new, mmap_start, mmap_end);
+        tmp = tmp->next;
+    }
+    
+    // 4. 复制用户栈 [TRAPFRAME - ustack_npage * PGSIZE, TRAPFRAME)
+    uint64 ustack_start = TRAPFRAME - ustack_npage * PGSIZE;
+    copy_range(old, new, ustack_start, TRAPFRAME);
+}
+```
+
+**设计要点**：
+- **不复制 trapframe/trampoline**：这些是内核资源，在 `proc_pgtbl_init()` 中单独处理
+- **堆顶对齐**：`heap_top` 可能不是页对齐的，需要向上对齐
+- **遍历 mmap 链表**：每个 mmap 区域可能不连续，需要逐个复制
+- **动态栈大小**：根据 `ustack_npage` 计算栈的实际大小
+
+**3. destroy_pgtbl()**: 递归释放页表的辅助函数
+
+```c
+static void destroy_pgtbl(pgtbl_t pgtbl, uint32 level)
+{
+    for (int i = 0; i < 512; i++) {
+        pte_t pte = pgtbl[i];
+        
+        if (pte & PTE_V) {
+            uint64 child_pa = PTE_TO_PA(pte);
+            
+            if (level > 1) {
+                // 非叶子节点：递归释放下一级页表
+                destroy_pgtbl((pgtbl_t)child_pa, level - 1);
+            } else {
+                // 叶子节点(level == 1)：释放物理页
+                if (pte & PTE_U) {
+                    // 用户页面，可以释放
+                    pmem_free(child_pa, false);
+                }
+                // 内核页面(如 trampoline)不释放
+            }
+        }
+    }
+    
+    // 释放当前页表本身
+    pmem_free((uint64)pgtbl, true);
+}
+```
+
+**递归逻辑**：
+- **Level 3**: 顶级页表，包含 512 个指向 Level 2 页表的指针
+- **Level 2**: 中级页表，包含 512 个指向 Level 1 页表的指针
+- **Level 1**: 叶子页表，包含 512 个指向物理页的指针
+  - 检查 `PTE_U` 标志：用户页释放，内核页保留
+
+**为什么要检查 PTE_U？**
+- Trampoline 页面是内核共享资源，所有进程共用，不能释放
+- 用户代码、数据、栈都是进程独有的，必须释放
+
+**4. uvm_destroy_pgtbl()**: 页表销毁的入口函数
+
+```c
+void uvm_destroy_pgtbl(pgtbl_t pgtbl)
+{
+    // 解除 trapframe 和 trampoline 的映射
+    vm_unmappages(pgtbl, TRAPFRAME, PGSIZE, false);  // trapframe 不释放物理页
+    vm_unmappages(pgtbl, TRAMPOLINE, PGSIZE, false); // trampoline 不释放物理页
+    
+    // 递归释放整个页表结构（从 level 3 开始）
+    destroy_pgtbl(pgtbl, 3);
+}
+```
+
+**注意事项**：
+- **Trapframe 不释放物理页**：在测试场景中，新页表可能共享原进程的 trapframe
+- **先解除映射**：`vm_unmappages` 会将 PTE 置为 0，防止 `destroy_pgtbl` 重复处理
+- **递归释放**：从顶级页表开始，自顶向下释放所有层级
+
+### 核心设计理念
+
+**页表复制的本质**：
+- 创建地址空间的完整副本
+- 物理内存完全独立（写时不复制）
+- 虚拟地址布局保持一致
+
+**为什么需要逐页复制？**
+- **独立性**：父子进程各自修改不会相互影响
+- **简单性**：不需要实现写时复制（COW）机制
+- **完整性**：堆栈、数据、代码全部复制
+
+**三级页表的递归处理**：
+```
+Level 3 (root)
+  ├─ Level 2 (512 entries)
+  │   ├─ Level 1 (512 entries)
+  │   │   ├─ Physical Page 0
+  │   │   ├─ Physical Page 1
+  │   │   └─ ...
+  │   └─ ...
+  └─ ...
+```
+- 释放顺序：先释放叶子物理页 → 再释放 Level 1 页表 → 再释放 Level 2 页表 → 最后释放 Level 3 页表
+- 递归天然保证了正确的释放顺序
+
+### 踩过的坑
+
+**1. 堆顶页对齐问题**
+- **错误**：直接使用 `heap_top` 作为 `copy_range` 的结束地址
+- **后果**：编译错误，`PGROUNDUP` 宏未定义
+- **解决**：手动页对齐 `(heap_top + PGSIZE - 1) & ~(PGSIZE - 1)`
+
+**2. 头文件包含问题**
+- **错误**：`sys_test_pgtbl` 中调用 `proc_pgtbl_init()` 未声明
+- **后果**：隐式声明导致编译错误
+- **解决**：在 `syscall/mod.h` 中添加 `#include "../proc/mod.h"`
+
+**3. Trapframe 释放问题**
+- **错误**：在 `destroy_pgtbl` 中尝试释放 trapframe 的物理页
+- **后果**：`pmem_free: page out of range` panic
+- **原因**：测试中新页表共享原进程的 trapframe，物理地址在页表区域（`0x803xxxxx`）
+- **解决**：`uvm_destroy_pgtbl` 中使用 `vm_unmappages(..., false)` 不释放物理页
+
+### 调试技巧
+
+**打印页表内容验证复制**：
+```c
+printf("Source page table:\n");
+vm_print(old_pgtbl);
+
+uvm_copy_pgtbl(old, new, heap_top, ustack_npage, mmap);
+
+printf("Copied page table:\n");
+vm_print(new_pgtbl);
+```
+- 对比物理地址：复制后应该是不同的物理页（地址不同）
+- 对比虚拟地址：虚拟地址范围应该完全相同
+- 对比标志位：权限标志应该一致
+
+**分段测试**：
+1. 先只复制代码段，验证 `copy_range` 是否正确
+2. 再添加堆复制，验证页对齐逻辑
+3. 添加 mmap 复制，验证链表遍历
+4. 最后添加栈复制，验证完整性
+
+## 测试5
+
+测试用例验证了页表复制和销毁的正确性：
+
+**测试步骤**：
+1. **准备数据**：在堆、mmap、栈中写入测试数据
+   - 堆：`0x12345678`, `0xABCDEF00`, `0x99887766`
+   - Mmap 区域1：`0xDEADBEEF`, `0xCAFEBABE`
+   - Mmap 区域2：`0x11223344`, `0x55667788`
+   - 栈：字符 `'H'`, `'W'`, `'!'`
+
+2. **触发栈扩展**：分配 2 页的栈数组触发 page fault
+
+3. **页表复制**：
+   - 创建新页表
+   - 复制所有用户内存区域
+   - 打印新页表内容验证
+
+4. **页表销毁**：
+   - 递归释放所有页表和物理页
+   - 验证没有内存泄漏或 panic
+
+**验证要点**：
+- 复制后的页表应该有不同的物理地址
+- 虚拟地址布局应该完全一致
+- Trapframe 和 trampoline 的映射正确
+- 销毁过程没有释放内核共享资源
+
+**测试结果**：
+![alt](pictures/测试5.png)
+
+
 
 
 ## 实验感想

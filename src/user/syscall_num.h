@@ -4,3 +4,4 @@
 #define SYS_brk 4       // 调整堆边界
 #define SYS_mmap 5      // 创建内存映射
 #define SYS_munmap 6    // 解除内存映射
+#define SYS_test_pgtbl 7 // 测试页表复制与销毁

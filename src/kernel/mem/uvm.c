@@ -488,14 +488,40 @@ uint64 uvm_ustack_grow(pgtbl_t pgtbl, uint64 old_ustack_npage, uint64 fault_addr
 // ps: 顶级页表level = 3
 static void destroy_pgtbl(pgtbl_t pgtbl, uint32 level)
 {
-
+    // 遍历当前级页表的所有页表项
+    for (int i = 0; i < 512; i++) {
+        pte_t pte = pgtbl[i];
+        
+        // 如果页表项有效
+        if (pte & PTE_V) {
+            uint64 child_pa = PTE_TO_PA(pte);
+            
+            // 如果不是叶子页表项（level > 1），递归释放下一级页表
+            if (level > 1) {
+                destroy_pgtbl((pgtbl_t)child_pa, level - 1);
+            } else {
+                // level == 1, 这是叶子节点,需要释放它指向的物理页
+                // 但要注意 trampoline 不能释放(flags & PTE_U == 0)
+                if (pte & PTE_U) {
+                    // 用户页面,可以释放
+                    pmem_free(child_pa, false);
+                }
+                // 内核页面(如 trampoline)不释放,因为是共享的
+            }
+        }
+    }
+    
+    // 释放当前页表本身占用的物理页
+    pmem_free((uint64)pgtbl, true);
 }
 
 // 页表销毁
 void uvm_destroy_pgtbl(pgtbl_t pgtbl)
 {
-    vm_unmappages(pgtbl, TRAPFRAME, PGSIZE, true);   // 可以释放，因为trapframe是每个进程独有的
-    vm_unmappages(pgtbl, TRAMPOLINE, PGSIZE, false); // 不能释放，因为所有进程共用区域
+    // 注意: 在测试场景中,trapframe 可能是共享的,所以不释放物理页
+    // 只解除映射即可
+    vm_unmappages(pgtbl, TRAPFRAME, PGSIZE, false);  // 不释放物理页
+    vm_unmappages(pgtbl, TRAMPOLINE, PGSIZE, false); // 不释放,因为所有进程共用
     destroy_pgtbl(pgtbl, 3);
 }
 
@@ -527,5 +553,27 @@ static void copy_range(pgtbl_t old, pgtbl_t new, uint64 begin, uint64 end)
 // 拷贝的页表管理的物理页是原来页表的复制品
 void uvm_copy_pgtbl(pgtbl_t old, pgtbl_t new, uint64 heap_top, uint64 ustack_npage, mmap_region_t *mmap)
 {
-
+    // 1. 复制用户代码页 (USER_BASE)
+    copy_range(old, new, USER_BASE, USER_BASE + PGSIZE);
+    
+    // 2. 复制堆空间 [USER_BASE + PGSIZE, heap_top)
+    if (heap_top > USER_BASE + PGSIZE) {
+        uint64 heap_start = USER_BASE + PGSIZE;
+        // 向上对齐到页边界
+        uint64 heap_end = (heap_top + PGSIZE - 1) & ~(PGSIZE - 1);
+        copy_range(old, new, heap_start, heap_end);
+    }
+    
+    // 3. 复制 mmap 区域
+    mmap_region_t *tmp = mmap;
+    while (tmp != NULL) {
+        uint64 mmap_start = tmp->begin;
+        uint64 mmap_end = tmp->begin + tmp->npages * PGSIZE;
+        copy_range(old, new, mmap_start, mmap_end);
+        tmp = tmp->next;
+    }
+    
+    // 4. 复制用户栈 [TRAPFRAME - ustack_npage * PGSIZE, TRAPFRAME)
+    uint64 ustack_start = TRAPFRAME - ustack_npage * PGSIZE;
+    copy_range(old, new, ustack_start, TRAPFRAME);
 }

@@ -239,3 +239,53 @@ uint64 sys_munmap()
     
     return 0;
 }
+
+/*
+    测试页表复制与销毁
+    成功返回0, 失败返回-1
+*/
+uint64 sys_test_pgtbl()
+{
+    proc_t *p = myproc();
+    
+    printf("\n=== [Kernel] Testing page table copy and destroy ===\n");
+    
+    // 1. 创建新页表
+    printf("\n[1] Creating new page table...\n");
+    pgtbl_t new_pgtbl = proc_pgtbl_init((uint64)p->tf);
+    if (new_pgtbl == NULL) {
+        printf("Failed to create new page table\n");
+        return -1;
+    }
+    printf("New page table created at %p\n", new_pgtbl);
+    
+    // 2. 复制页表
+    printf("\n[2] Copying page table content...\n");
+    printf("Source page table: %p\n", p->pgtbl);
+    printf("  - heap_top: %p\n", p->heap_top);
+    printf("  - ustack_npage: %d\n", p->ustack_npage);
+    printf("  - mmap regions: ");
+    if (p->mmap == NULL) {
+        printf("none\n");
+    } else {
+        printf("\n");
+        uvm_show_mmaplist(p->mmap);
+    }
+    
+    uvm_copy_pgtbl(p->pgtbl, new_pgtbl, p->heap_top, p->ustack_npage, p->mmap);
+    printf("Page table copied successfully\n");
+    
+    // 3. 验证复制是否正确（通过打印新页表的内容）
+    printf("\n[3] Verifying copied page table...\n");
+    printf("New page table content:\n");
+    vm_print(new_pgtbl);
+    
+    // 4. 销毁新页表
+    printf("\n[4] Destroying copied page table...\n");
+    uvm_destroy_pgtbl(new_pgtbl);
+    printf("Page table destroyed successfully\n");
+    
+    printf("\n=== [Kernel] Page table test completed ===\n\n");
+    
+    return 0;
+}
