@@ -18,7 +18,7 @@ OKOS
 ├── kernel.ld      定义了内核程序在链接时的布局
 ├── pictures       README使用的图片目录 (CHANGE, 日常更新)
 ├── lab-6-README.md实验指导书 (CHANGE, 日常更新)
-├── README.md      实验报告 (CHANGE, 日常更新)
+├── README.md      实验报告
 └── src            源码
     ├── kernel     内核源码
     │   ├── arch   RISC-V相关
