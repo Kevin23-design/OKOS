@@ -82,9 +82,9 @@ void timer_wait(uint64 ntick)
     // 获取当前时间
     spinlock_acquire(&sys_timer.lk);
     uint64 target_ticks = sys_timer.ticks + ntick;
-    
     // 循环睡眠直到到达目标时间
     while (sys_timer.ticks < target_ticks) {
+        printf("proc %d is sleeping!\n", myproc()->pid);
         // 以sys_timer为资源进入睡眠
         // proc_sleep会释放sys_timer.lk,然后在被唤醒后重新获取
         proc_sleep(&sys_timer, &sys_timer.lk);
@@ -92,6 +92,7 @@ void timer_wait(uint64 ntick)
         // 被唤醒后,检查是否到达目标时间
         // 如果没到,继续睡眠
     }
+    printf("proc %d is wakeup!\n", myproc()->pid);
     
     spinlock_release(&sys_timer.lk);
 }

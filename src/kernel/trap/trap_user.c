@@ -26,6 +26,10 @@ void trap_user_handler()
 	proc_t *p = myproc();
 	trapframe_t *tf = p->tf;
 
+	// 确认trap来自U态
+	uint64 sstatus = r_sstatus();
+	assert((sstatus & SSTATUS_SPP) == 0, "trap_user_handler: not from user mode");
+
 	// 记录本次trap发生时的用户PC
 	tf->user_to_kern_epc = r_sepc();
 
@@ -93,6 +97,9 @@ void trap_user_return()
 	proc_t *p = myproc();
 	assert(p != NULL, "trap_user_return: myproc() returned NULL");
 	trapframe_t *tf = p->tf;
+
+	// 返回用户态前关闭中断，防止在切换stvec过程中发生S态中断
+	intr_off();
 
 	// 更新用于下一次陷阱进入时恢复的关键内核上下文信息。
 	// 尤其是 user_to_kern_hartid, 需要反映当前CPU编号, 否则当进程在不同CPU上运行时

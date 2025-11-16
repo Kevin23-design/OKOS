@@ -24,9 +24,13 @@ static proc_t proc_list[N_PROC];
 static proc_t *proczero;
 
 
+#define SCHED_DEBUG 0
+
 // 全局pid + 保护它的锁
 static int global_pid;
 static spinlock_t pid_lk;
+// wait/exit同步锁
+static spinlock_t wait_lk;
 
 /* 获取一个pid */
 static int alloc_pid()
@@ -51,6 +55,7 @@ void proc_init()
 {    
     // 初始化 PID 分配器锁
     spinlock_init(&pid_lk, "pid");
+    spinlock_init(&wait_lk, "wait");
     global_pid = 1;  // PID 从 1 开始
     
     // 初始化进程数组中的每个进程
@@ -341,6 +346,9 @@ int proc_fork()
     // 6. 设置子进程的返回值为0
     // 通过设置a0寄存器(系统调用返回值),让子进程能区分自己
     child->tf->a0 = 0;
+
+    // 子进程内核栈与父进程不同, 需要更新trapframe中的kernel sp
+    child->tf->user_to_kern_sp = child->kstack + PGSIZE;
     
     // 7. 复制进程名称(调试用)
     for (int i = 0; i < 16 && parent->name[i] != '\0'; i++) {
@@ -385,12 +393,16 @@ void proc_yield()
 */
 static void proc_try_wakeup(proc_t *p)
 {
-    // 唤醒正在等待p这个进程的父进程
-    // 父进程在proc_wait中会将sleep_space设置为自己
-    // 所以这里唤醒所有等待p->parent的进程
-    if (p->parent != NULL) {
-        proc_wakeup(p->parent);
+    proc_t *parent = p->parent;
+    if (parent == NULL)
+        return;
+
+    spinlock_acquire(&parent->lk);
+    if (parent->state == SLEEPING && parent->sleep_space == parent) {
+        parent->state = RUNNABLE;
+        printf("proc %d is wakeup!\n", parent->pid);
     }
+    spinlock_release(&parent->lk);
 }
 
 /*
@@ -413,7 +425,7 @@ static void proc_reparent(proc_t *parent)
             
             // 如果子进程已经是ZOMBIE状态,需要唤醒proczero来回收
             if (p->state == ZOMBIE) {
-                proc_try_wakeup(proczero);
+                proc_try_wakeup(p);
             }
         }
         
@@ -431,8 +443,9 @@ void proc_exit(int exit_code)
     
     // proczero不能退出
     assert(p != proczero, "proc_exit: proczero cannot exit");
-    
-    // 1. 将当前进程的所有子进程过继给proczero
+
+    // 1. 持有wait锁, 将当前进程的所有子进程过继给proczero
+    spinlock_acquire(&wait_lk);
     proc_reparent(p);
     
     // 2. 获取当前进程的锁
@@ -446,6 +459,7 @@ void proc_exit(int exit_code)
     
     // 5. 唤醒父进程(如果父进程在wait中睡眠)
     proc_try_wakeup(p);
+    spinlock_release(&wait_lk);
     
     // 6. 切换到调度器,永不返回
     // 注意: 此时进程还持有自己的锁
@@ -465,6 +479,7 @@ void proc_exit(int exit_code)
 int proc_wait(uint64 user_addr)
 {
     proc_t *parent = myproc();
+    spinlock_acquire(&wait_lk);
     
     while (1) {
         int has_children = 0; // 是否有子进程
@@ -485,6 +500,8 @@ int proc_wait(uint64 user_addr)
                     int pid = p->pid;
                     int exit_code = p->exit_code;
                     
+                    printf("proc %d is wakeup!\n", parent->pid);
+
                     // 如果user_addr不为0,将退出状态传出到用户空间
                     if (user_addr != 0) {
                         uvm_copyout(parent->pgtbl, user_addr, 
@@ -496,6 +513,7 @@ int proc_wait(uint64 user_addr)
                     proc_free(p);
                     
                     // 返回子进程的pid
+                    spinlock_release(&wait_lk);
                     return pid;
                 }
             }
@@ -505,15 +523,13 @@ int proc_wait(uint64 user_addr)
         
         // 如果没有子进程,返回-1
         if (!has_children) {
+            spinlock_release(&wait_lk);
             return -1;
         }
         
         // 有子进程但都还没退出,进入睡眠状态
-        // 以当前进程自己为sleep_space
-        // 当子进程退出时会唤醒等待parent的进程
-        spinlock_acquire(&parent->lk);
-        proc_sleep(parent, &parent->lk);
-        spinlock_release(&parent->lk);
+        // 使用wait锁与子进程exit保持同步
+        proc_sleep(parent, &wait_lk);
     }
 }
 
@@ -631,6 +647,10 @@ void proc_scheduler()
                 
                 // 将当前CPU绑定到这个进程
                 c->proc = p;
+
+                if (SCHED_DEBUG) {
+                    printf("proc %d is running...\n", p->pid);
+                }
                 
                 // 切换到用户进程的上下文
                 // 保存调度器的上下文到cpu->ctx

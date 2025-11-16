@@ -84,6 +84,9 @@ void trap_kernel_handler()
     uint64 stval = r_stval();     // 发生trap时保存的附加信息 (不同trap类型不一样)
 
     // 确认trap来自S-mode且此时trap处于关闭状态
+    if ((sstatus & SSTATUS_SPP) == 0) {
+        printf("kernel trap from user? scause=%p sepc=%p stval=%p\n", scause, sepc, stval);
+    }
     assert(sstatus & SSTATUS_SPP, "trap_kernel_handler: not from s-mode");
     assert(intr_get() == 0, "trap_kernel_handler: interreput enabled");
 

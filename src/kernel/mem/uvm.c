@@ -13,7 +13,7 @@ void uvm_copyin(pgtbl_t pgtbl, uint64 dst, uint64 src, uint32 len)
         pte_t *pte = vm_getpte(pgtbl, va, false);
         
         // 检查页表项是否有效且可读
-        if (pte == NULL || !(*pte & PTE_V) || !(*pte & PTE_R)) {
+        if (pte == NULL || !(*pte & PTE_V) || !(*pte & PTE_R) || !(*pte & PTE_U)) {
             panic("uvm_copyin: invalid address");
         }
         
@@ -47,7 +47,7 @@ void uvm_copyout(pgtbl_t pgtbl, uint64 dst, uint64 src, uint32 len)
         pte_t *pte = vm_getpte(pgtbl, va, false);
         
         // 检查页表项是否有效且可写
-        if (pte == NULL || !(*pte & PTE_V) || !(*pte & PTE_W)) {
+        if (pte == NULL || !(*pte & PTE_V) || !(*pte & PTE_W) || !(*pte & PTE_U)) {
             panic("uvm_copyout: invalid address");
         }
         
@@ -84,7 +84,7 @@ void uvm_copyin_str(pgtbl_t pgtbl, uint64 dst, uint64 src, uint32 maxlen)
         pte_t *pte = vm_getpte(pgtbl, va, false);
         
         // 检查页表项是否有效且可读
-        if (pte == NULL || !(*pte & PTE_V) || !(*pte & PTE_R)) {
+        if (pte == NULL || !(*pte & PTE_V) || !(*pte & PTE_R) || !(*pte & PTE_U)) {
             panic("uvm_copyin_str: invalid address");
         }
         

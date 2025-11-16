@@ -16,16 +16,10 @@ uint64 sys_brk()
     uint64 cur = p->heap_top;
 
     if (new_top == 0) {
-        // 查询当前堆顶
-        printf("look event: ret_heap_top = %p\n", cur);
-        vm_print(p->pgtbl);
         return cur;
     }
 
     if (new_top == cur) {
-        // 不变
-        printf("equal event: ret_heap_top = %p\n", cur);
-        vm_print(p->pgtbl);
         return cur;
     }
 
@@ -33,25 +27,17 @@ uint64 sys_brk()
         // 增长
         uint64 ret = uvm_heap_grow(p->pgtbl, cur, (uint32)(new_top - cur));
         if (ret == (uint64)-1) {
-            printf("grow event: ret_heap_top = %p\n", cur);
-            vm_print(p->pgtbl);
             return (uint64)-1;
         }
         p->heap_top = ret;
-        printf("grow event: ret_heap_top = %p\n", ret);
-        vm_print(p->pgtbl);
         return ret;
     } else {
         // 收缩
         uint64 ret = uvm_heap_ungrow(p->pgtbl, cur, (uint32)(cur - new_top));
         if (ret == (uint64)-1) {
-            printf("ungrow event: ret_heap_top = %p\n", cur);
-            vm_print(p->pgtbl);
             return (uint64)-1;
         }
         p->heap_top = ret;
-        printf("ungrow event: ret_heap_top = %p\n", ret);
-        vm_print(p->pgtbl);
         return ret;
     }
 }
@@ -101,11 +87,6 @@ uint64 sys_mmap()
         }
     }
     
-    printf("sys_mmap: allocated region [%p, %p)\n", begin, begin + len);
-    uvm_show_mmaplist(p->mmap);
-    vm_print(p->pgtbl);
-    printf("\n");
-    
     return begin;
 }
 
@@ -117,7 +98,6 @@ uint64 sys_mmap()
 */
 uint64 sys_munmap()
 {
-    proc_t *p = myproc();
     uint64 begin;
     uint64 len;
     
@@ -141,11 +121,6 @@ uint64 sys_munmap()
     
     // 调用 uvm_munmap
     uvm_munmap(begin, npages);
-    
-    printf("sys_munmap: unmapped region [%p, %p)\n", begin, begin + len);
-    uvm_show_mmaplist(p->mmap);
-    vm_print(p->pgtbl);
-    printf("\n");
     
     return 0;
 }
