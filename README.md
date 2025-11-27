@@ -1,10 +1,7 @@
-# LAB-6: 单进程走向多进程——进程调度与生命周期
+# LAB-7: 文件系统 之 磁盘管理
 
 ## 过程日志
-1. 2025.11.10 更新lab6文件
-2. 2025.11.10 张子扬初步完成lab6的测试以及README
-3. 2025.11.16 王俊翔修改test02/03/04涉及到的bug并完善README
-4. 2025.11.24 张子扬设计新的测试样例
+1. 2025.11.27 更新lab7文件
 
 
 ## 代码结构
@@ -15,11 +12,10 @@ OKOS
 ├── registers.xml  配置了可视化调试环境
 ├── .gdbinit.tmp-riscv xv6自带的调试配置
 ├── common.mk      Makefile中一些工具链的定义
-├── Makefile       编译运行整个项目
+├── Makefile       编译运行整个项目 (CHANGE)
 ├── kernel.ld      定义了内核程序在链接时的布局
 ├── pictures       README使用的图片目录 (CHANGE, 日常更新)
-├── lab-6-README.md实验指导书 (CHANGE, 日常更新)
-├── README.md      实验报告
+├── README.md      实验指导书 (CHANGE, 日常更新)
 └── src            源码
     ├── kernel     内核源码
     │   ├── arch   RISC-V相关
@@ -31,10 +27,10 @@ OKOS
     │   │   └── start.c
     │   ├── lock   锁机制
     │   │   ├── spinlock.c
-    │   │   ├── sleeplock.c (DONE, 实现睡眠锁)
-    │   │   ├── method.h (CHANGE)
-    │   │   ├── mod.h (CHANGE, 增加头文件)
-    │   │   └── type.h (CHANGE)
+    │   │   ├── sleeplock.c
+    │   │   ├── method.h
+    │   │   ├── mod.h
+    │   │   └── type.h
     │   ├── lib    常用库
     │   │   ├── cpu.c
     │   │   ├── print.c
@@ -45,40 +41,51 @@ OKOS
     │   │   └── type.h
     │   ├── mem    内存模块
     │   │   ├── pmem.c
-    │   │   ├── kvm.c (DONE, kvm_init从单进程内核栈初始化到多进程内核栈初始化)
+    │   │   ├── kvm.c (TODO, 内核页表增加磁盘相关映射 + vm_getpte处理pgtbl为NULL的情况)
     │   │   ├── uvm.c
     │   │   ├── mmap.c
     │   │   ├── method.h
     │   │   ├── mod.h
     │   │   └── type.h
     │   ├── trap   陷阱模块
-    │   │   ├── plic.c
-    │   │   ├── timer.c (DONE, 新增timer_wait函数, 增加时钟中断调度逻辑)
-    │   │   ├── trap_kernel.c (DONE, 增加时钟中断调度逻辑)
-    │   │   ├── trap_user.c (DONE, 增加时钟中断调度逻辑)
+    │   │   ├── plic.c (TODO, 增加磁盘中断相关支持)
+    │   │   ├── timer.c
+    │   │   ├── trap_kernel.c (TODO, 在外设处理函数中识别和响应磁盘中断)
+    │   │   ├── trap_user.c
     │   │   ├── trap.S
     │   │   ├── trampoline.S
-    │   │   ├── method.h (CHANGE, 增加timer_wait函数声明)
-    │   │   ├── mod.h
+    │   │   ├── method.h
+    │   │   ├── mod.h (CHANGE, include 文件系统模块)
     │   │   └── type.h
     │   ├── proc   进程模块
-    │   │   ├── proc.c (DONE, 核心工作)
+    │   │   ├── proc.c (在proc_return中调用文件系统初始化函数)
     │   │   ├── swtch.S
-    │   │   ├── method.h (CHANGE)
-    │   │   ├── mod.h
-    │   │   └── type.h (CHANGE)
+    │   │   ├── method.h
+    │   │   ├── mod.h (CHANGE, include 文件系统模块)
+    │   │   └── type.h
     │   ├── syscall 系统调用模块
-    │   │   ├── syscall.c (CHANGE, 支持新的系统调用)
-    │   │   ├── sysfunc.c (DONE, 实现新的系统调用)
-    │   │   ├── method.h (CHANGE)
-    │   │   ├── mod.h
-    │   │   └── type.h (CHANGE)
-    │   └── main.c (CHANGE)
+    │   │   ├── syscall.c (TODO, 新增系统调用)
+    │   │   ├── sysfunc.c (TODO, 新增系统调用)
+    │   │   ├── method.h (CHANGE, 新增系统调用)
+    │   │   ├── mod.h (CHANGE, include文件系统模块)
+    │   │   └── type.h (CHANGE, 新增系统调用)
+    │   ├── fs     文件系统模块
+    │   │   ├── bitmap.c (TODO, bitmap相关操作)
+    │   │   ├── buffer.c (TODO, 内存中的block缓冲区管理)
+    │   │   ├── fs.c (TODO, 文件系统相关)
+    │   │   ├── virtio.c (NEW, 虚拟磁盘的驱动)
+    │   │   ├── method.h (NEW)
+    │   │   ├── mod.h (NEW)
+    │   │   └── type.h (NEW)
+    │   └── main.c (CHANGE, 增加virtio_init)
+    ├── mkfs       磁盘映像初始化
+    │   ├── mkfs.c (NEW)
+    │   └── mkfs.h (NEW)
     └── user       用户程序
-        ├── initcode.c (CHANGE)
+        ├── initcode.c (CHANGE, 日常更新)
         ├── sys.h
         ├── syscall_arch.h
-        └── syscall_num.h (CHANGE)
+        └── syscall_num.h (CHANGE, 日常更新)
 ```
 
 ## 实验过程
