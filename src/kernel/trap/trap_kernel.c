@@ -137,6 +137,8 @@ void external_interrupt_handler()
     int irq = plic_claim();
     if (irq == UART_IRQ) {
         uart_intr();  // 串口中断回显
+    } else if (irq == VIRTIO_IRQ) {
+        virtio_disk_intr();
     } else if (irq > 0) {
         printf("unexpected PLIC irq=%d\n", irq);
     }

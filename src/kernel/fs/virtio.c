@@ -1,4 +1,6 @@
 #include "mod.h"
+#include "../proc/method.h"
+#include "../mem/method.h"
 
 static __attribute__((aligned(PGSIZE))) disk_t disk;
 

@@ -47,6 +47,7 @@ static int alloc_pid()
 static void proc_return()
 {
     spinlock_release(&myproc()->lk);
+    fs_init();
     trap_user_return();
 }
 

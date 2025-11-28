@@ -216,3 +216,111 @@ uint64 sys_getpid()
 {
     return myproc()->pid;
 }
+
+uint64 sys_alloc_block()
+{
+    uint32 block = bitmap_alloc_block();
+    if (block == BLOCK_NUM_UNUSED)
+        return (uint64)-1;
+    return block;
+}
+
+uint64 sys_free_block()
+{
+    uint32 block_num;
+    arg_uint32(0, &block_num);
+    bitmap_free_block(block_num);
+    return 0;
+}
+
+uint64 sys_alloc_inode()
+{
+    uint32 inode = bitmap_alloc_inode();
+    if (inode == (uint32)-1)
+        return (uint64)-1;
+    return inode;
+}
+
+uint64 sys_free_inode()
+{
+    uint32 inode_num;
+    arg_uint32(0, &inode_num);
+    bitmap_free_inode(inode_num);
+    return 0;
+}
+
+uint64 sys_show_bitmap()
+{
+    uint32 which;
+    arg_uint32(0, &which);
+    bitmap_print(which == 0);
+    return 0;
+}
+
+static inline buffer_t *buffer_from_handle(uint64 handle, const char *who)
+{
+    buffer_t *buf = (buffer_t *)handle;
+    assert(buf != NULL, who);
+    return buf;
+}
+
+uint64 sys_get_block()
+{
+    uint32 block_num;
+    arg_uint32(0, &block_num);
+    buffer_t *buf = buffer_get(block_num);
+    return (uint64)buf;
+}
+
+uint64 sys_put_block()
+{
+    uint64 handle;
+    arg_uint64(0, &handle);
+    buffer_t *buf = buffer_from_handle(handle, "sys_put_block: invalid handle");
+    buffer_put(buf);
+    return 0;
+}
+
+uint64 sys_read_block()
+{
+    uint64 handle;
+    uint64 user_dst;
+    arg_uint64(0, &handle);
+    arg_uint64(1, &user_dst);
+
+    buffer_t *buf = buffer_from_handle(handle, "sys_read_block: invalid handle");
+    assert(sleeplock_holding(&buf->slk), "sys_read_block: buffer unlocked");
+
+    proc_t *p = myproc();
+    uvm_copyout(p->pgtbl, user_dst, (uint64)buf->data, BLOCK_SIZE);
+    return 0;
+}
+
+uint64 sys_write_block()
+{
+    uint64 handle;
+    uint64 user_src;
+    arg_uint64(0, &handle);
+    arg_uint64(1, &user_src);
+
+    buffer_t *buf = buffer_from_handle(handle, "sys_write_block: invalid handle");
+    assert(sleeplock_holding(&buf->slk), "sys_write_block: buffer unlocked");
+
+    proc_t *p = myproc();
+    uvm_copyin(p->pgtbl, (uint64)buf->data, user_src, BLOCK_SIZE);
+    buffer_write(buf);
+    return 0;
+}
+
+uint64 sys_show_buffer()
+{
+    buffer_print_info();
+    return 0;
+}
+
+uint64 sys_flush_buffer()
+{
+    uint32 count;
+    arg_uint32(0, &count);
+    return buffer_freemem(count);
+}

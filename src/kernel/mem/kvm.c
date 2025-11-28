@@ -9,6 +9,9 @@ static pgtbl_t kernel_pgtbl;
 // 提示：使用 VA_TO_VPN + PTE_TO_PA + PA_TO_PTE
 pte_t *vm_getpte(pgtbl_t pgtbl, uint64 va, bool alloc)
 {
+    if (pgtbl == NULL)
+        pgtbl = kernel_pgtbl;
+
     // 检查虚拟地址是否合法
     if (va >= VA_MAX)
         return NULL;
@@ -129,6 +132,9 @@ void kvm_init()
     
     // PLIC映射 (0x0c000000)
     vm_mappages(kernel_pgtbl, PLIC_BASE, PLIC_BASE, 0x400000, PTE_R | PTE_W);
+
+    // virtio MMIO 映射
+    vm_mappages(kernel_pgtbl, VIRTIO_BASE, VIRTIO_BASE, PGSIZE, PTE_R | PTE_W);
     
     // 内核代码区域映射 (KERNEL_BASE ~ KERNEL_DATA)
     uint64 kernel_code_size = (uint64)KERNEL_DATA - KERNEL_BASE;
