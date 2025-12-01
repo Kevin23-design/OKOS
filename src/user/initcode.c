@@ -1,137 +1,72 @@
-// test-1: read superblock
-// #include "sys.h"
-
-// int main()
-// {
-// 	syscall(SYS_print_str, "hello, world!\n");
-// 	while(1);
-// }
-
-// test-2: bitmap
-// #include "sys.h"
-
-// #define NUM 20
-// #define N_BUFFER 8
-
-// int main()
-// {
-// 	unsigned int block_num[NUM];
-// 	unsigned int inode_num[NUM];
-
-// 	for (int i = 0; i < NUM; i++)
-// 		block_num[i] = syscall(SYS_alloc_block);
-
-// 	syscall(SYS_flush_buffer, 8);
-// 	syscall(SYS_show_bitmap, 0);
-
-// 	for (int i = 0; i < NUM; i+=2)
-// 		syscall(SYS_free_block, block_num[i]);
-	
-// 	syscall(SYS_flush_buffer, 8);
-// 	syscall(SYS_show_bitmap, 0);
-
-// 	for (int i = 1; i < NUM; i+=2)
-// 		syscall(SYS_free_block, block_num[i]);
-
-// 	syscall(SYS_flush_buffer, 8);
-// 	syscall(SYS_show_bitmap, 0);
-
-// 	for (int i = 0; i < NUM; i++)
-// 		inode_num[i] = syscall(SYS_alloc_inode);
-
-// 	syscall(SYS_flush_buffer, 8);
-// 	syscall(SYS_show_bitmap, 1);
-
-// 	for (int i = 0; i < NUM; i++)
-// 		syscall(SYS_free_inode, inode_num[i]);
-
-// 	syscall(SYS_flush_buffer, 8);
-// 	syscall(SYS_show_bitmap, 1);
-
-// 	while(1);
-// }
-
-
-// test-3: buffer
+// test-4: cache thrashing
 #include "sys.h"
 
-#define PGSIZE 4096
 #define N_BUFFER 8
-#define BLOCK_BASE 5000
+#define TEST_COUNT 16 // 2 * N_BUFFER，确保发生大规模置换
+#define BLOCK_BASE 6000
+#define PGSIZE 4096
 
 int main()
 {
-	char data[PGSIZE], tmp[PGSIZE];
-	unsigned long long buffer[N_BUFFER];
+    char data[PGSIZE];
+    char read_buf[PGSIZE];
+    unsigned long long buf_ids[TEST_COUNT];
 
-	/*-------------一阶段测试: READ WRITE------------- */
+    syscall(SYS_print_str, "Test-4: Cache Thrashing Start\n");
 
-	/* 准备字符串"ABCDEFGH" */
-	for (int i = 0; i < 8; i++)
-		data[i] = 'A' + i;
-	data[8] = '\n';
-	data[9] = '\0';
+    /* 
+       阶段1: 连续写入 16 个块
+       由于 N_BUFFER=8，写入第 9 个块时，必然会踢出第 1 个块。
+       如果 Buffer Cache 实现了正确的“脏回写”策略，第 1 个块的数据应该被自动保存到磁盘。
+    */
+    syscall(SYS_print_str, "Step 1: Writing 16 blocks (Force Eviction)...\n");
+    for (int i = 0; i < TEST_COUNT; i++) {
+        // 构造标记数据: "Block-A", "Block-B", ...
+        for(int j=0; j<PGSIZE; j++) data[j] = 0;
+        data[0] = 'B'; data[1] = 'l'; data[2] = 'o'; data[3] = 'c'; data[4] = 'k'; data[5] = '-';
+        data[6] = 'A' + i; 
+        
+        buf_ids[i] = syscall(SYS_get_block, BLOCK_BASE + i);
+        syscall(SYS_write_block, buf_ids[i], data);
+        syscall(SYS_put_block, buf_ids[i]); // 引用计数归零，允许被置换
+    }
 
-	/* 查看此时的buffer_cache状态 */
-	syscall(SYS_print_str, "\nstate-1 ");
-	syscall(SYS_show_buffer);
+    /* 
+       阶段2: 彻底清空缓存
+       这会强制剩余的 8 个块也写回磁盘，并释放所有物理页。
+       接下来的读取操作将全部触发 Cache Miss，必须从磁盘读数据。
+    */
+    syscall(SYS_print_str, "Step 2: Flush all buffers.\n");
+    syscall(SYS_flush_buffer, N_BUFFER); 
 
-	/* 向BLOCK_BASE写入字符 */
-	buffer[0] = syscall(SYS_get_block, BLOCK_BASE);
-	syscall(SYS_write_block, buffer[0], data);
-	syscall(SYS_put_block, buffer[0]);
+    /* 
+       阶段3: 验证数据回读
+       检查之前被“踢出”的数据是否真的持久化到了磁盘上。
+    */
+    syscall(SYS_print_str, "Step 3: Verify data reload...\n");
+    int pass = 1;
+    for (int i = 0; i < TEST_COUNT; i++) {
+        unsigned long long bid = syscall(SYS_get_block, BLOCK_BASE + i);
+        syscall(SYS_read_block, bid, read_buf);
+        syscall(SYS_put_block, bid);
 
-	/* 查看此时的buffer_cache状态 */
-	syscall(SYS_print_str, "\nstate-2 ");
-	syscall(SYS_show_buffer);
+        // 验证标记位
+        if (read_buf[6] != 'A' + i) {
+            pass = 0;
+            syscall(SYS_print_str, "Fail at index: ");
+            // 简单的错误提示 (假设没有 printf %d)
+            char c[2] = {'0'+i/10, '0'+i%10}; // 简易 hex/decimal 打印
+            if(i<10) { c[0] = '0'+i; c[1]='\0'; }
+            syscall(SYS_print_str, c); 
+            syscall(SYS_print_str, "\n");
+        }
+    }
 
-	/* 清空内存副本, 确保后面从磁盘中重新读取 */
-	syscall(SYS_flush_buffer, N_BUFFER);
+    if (pass) {
+        syscall(SYS_print_str, "Test-4 PASSED: All blocks persisted and reloaded.\n");
+    } else {
+        syscall(SYS_print_str, "Test-4 FAILED: Data lost during eviction.\n");
+    }
 
-	/* 读取BLOCK_BASE*/
-	buffer[0] = syscall(SYS_get_block, BLOCK_BASE);
-	syscall(SYS_read_block, buffer[0], tmp);
-	syscall(SYS_put_block, buffer[0]);
-
-	/* 比较写入的字符串和读到的字符串 */
-	syscall(SYS_print_str, "\n");
-	syscall(SYS_print_str, "write data: ");
-	syscall(SYS_print_str, data);
-	syscall(SYS_print_str, "read data: ");
-	syscall(SYS_print_str, tmp);
-
-	/* 查看此时的buffer_cache状态 */
-	syscall(SYS_print_str, "\nstate-3 ");
-	syscall(SYS_show_buffer);
-
-	/*-------------二阶段测试: GET PUT FLUSH------------- */
-	
-	/* GET */
-	buffer[0] = syscall(SYS_get_block, BLOCK_BASE);
-	buffer[3] = syscall(SYS_get_block, BLOCK_BASE + 3);
-	buffer[7] = syscall(SYS_get_block, BLOCK_BASE + 7);
-	buffer[2] = syscall(SYS_get_block, BLOCK_BASE + 2);
-	buffer[4] = syscall(SYS_get_block, BLOCK_BASE + 4);
-
-	/* 查看此时的buffer_cache状态 */
-	syscall(SYS_print_str, "\nstate-4 ");
-	syscall(SYS_show_buffer);
-
-	/* PUT */
-	syscall(SYS_put_block, buffer[7]);
-	syscall(SYS_put_block, buffer[0]);
-	syscall(SYS_put_block, buffer[4]);
-
-	/* 查看此时的buffer_cache状态 */
-	syscall(SYS_print_str, "\nstate-5 ");
-	syscall(SYS_show_buffer);
-
-	/* FLUSH */
-	syscall(SYS_flush_buffer, 3);
-
-	/* 查看此时的buffer_cache状态 */
-	syscall(SYS_print_str, "\nstate-6 ");
-	syscall(SYS_show_buffer);
-
-	while(1);
+    while(1);
 }

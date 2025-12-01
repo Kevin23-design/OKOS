@@ -3,6 +3,8 @@
 ## 过程日志
 1. 2025.11.27 更新lab7文件
 2. 2025.11.28 王俊翔完成三个test
+3. 2025.12.1  张子扬优化readme内容，设计新的测试样例
+
 
 ## 代码结构
 ```
@@ -88,7 +90,68 @@ OKOS
         └── syscall_num.h (CHANGE, 日常更新)
 ```
 
-## 实验过程
+
+## 核心思考与架构设计
+
+本实验的目标是构建一个从用户态到磁盘驱动的完整 I/O 链路。不同于之前的内存管理或进程调度，文件系统涉及持久化存储，需要解决“内存-磁盘”速度不匹配和“用户-内核”空间隔离两大挑战。
+
+### 1. 系统分层架构
+为了降低复杂度，我们将系统划分为清晰的四层。每一层只负责特定的职责，通过标准接口交互。
+
+```text
++-------------------+
+|   User Space      |  用户程序 (initcode)
+| (open, read, ...) |  调用系统调用
++---------+---------+
+          | syscall (sys_read, sys_write, ...)
+          v
++---------+---------+
+|   File System     |  文件系统逻辑层
+| (inode, bitmap)   |  管理文件元数据、空闲块分配
++---------+---------+
+          | bread / bwrite
+          v
++---------+---------+
+|   Buffer Cache    |  缓冲层 (buf.c)
+| (LRU, sleeplock)  |  缓存热点块，合并磁盘 I/O，提供同步机制
++---------+---------+
+          | virtio_disk_rw
+          v
++---------+---------+
+|   Device Driver   |  驱动层 (virtio.c)
+| (virtio-blk)      |  操作 MMIO 寄存器，通过 DMA 与磁盘交互
++-------------------+
+```
+
+### 2. 缓冲层设计的核心逻辑 (Buffer Cache)
+Buffer Cache 是文件系统的“心脏”。它不仅是缓存，更是同步点。我们采用了 **LRU (Least Recently Used)** 策略来管理有限的内存块。
+
+**双向链表状态机设计：**
+我们维护了两个链表：`active_list` (活跃链表) 和 `inactive_list` (空闲/非活跃链表)。
+
+```text
+      [ Active List ]                 [ Inactive List ]
+      (ref_cnt > 0)                   (ref_cnt == 0)
+      正在被使用的块                   可被回收/复用的块
+    
+     +---+    +---+                  +---+    +---+
+     | B1 |<->| B2 |                 | B3 |<->| B4 |
+     +---+    +---+                  +---+    +---+
+       ^        ^                      ^        ^
+       |        |                      |        |
+       |        +-------(bput)---------+        |
+       |      引用计数归零，移入 inactive 头部      |
+       |                                        |
+       +--------(bget / cache hit)--------------+
+      再次被引用，从 inactive 移回 active
+```
+
+*   **分配策略 (bget)**:
+    1.  **Cache Hit**: 如果请求的 block 已经在 active 或 inactive 链表中，直接增加引用计数，移入 active 链表。
+    2.  **Cache Miss**: 扫描 inactive 链表（通常从尾部开始，即最久未使用的块），复用该节点，重置元数据。
+*   **同步机制**: 每个 Buffer 拥有一把 `sleeplock`。当一个进程正在读写某个块时，其他进程对该块的访问必须等待，保证了数据的一致性。
+
+## 实验过程详解
 
 ### 1. 磁盘链路打通：页表与中断协同
 - **内核页表补丁**：在 `kvm.c` 里让 `vm_getpte(NULL, ...)` 能回落到内核页表，再把 `VIRTIO_BASE` 相关寄存器映射进 `kernel_pgtbl`，保证驱动访问寄存器时不会触发缺页。
@@ -110,6 +173,8 @@ OKOS
 - **initcode 梯度**：按 README 指示在 `src/user/initcode.c` 中轮流填入 test-1/2/3，用不同的输出去验证 superblock、bitmap、buffer_cache 的正确性。
 - **运行策略**：每次切换测试都先 `make clean && make run`，确保磁盘镜像和内核镜像同步，日志截图记录在 `picture/` 目录供复现。
 
+---
+
 ## 测试分析
 
 ### test-1：打印超级块信息
@@ -129,6 +194,90 @@ OKOS
 - **结果**：state-1~state-6 的 active/inactive 列表满足“ref>0 在 active、ref=0 在 inactive”的 LRU 约束；由于 `pmem_alloc` 分配顺序不同，节点顺序和 `page(pa=…)` 地址可能与 README 截图略有差异，但各节点记录的 `block[id]` 与操作顺序一致，`write/read data` 均打印 ABCDEFGH，最终 flush 后 inactive list 清零，验证了缓冲管理的正确性。
 ![alt text](picture/test-3(1)-result.png)
 ![alt text](picture/test-3(2)-result.png)
+
+### 新增测试：test-4: Cache Thrashing (压力测试)
+- **目标**：验证当活跃块数量远超缓存容量时，系统是否能正确处理“置换-写回-重载”的循环。
+- **过程**：连续写入 16 个不同的 Block (超过缓存大小 2 倍)，强制触发置换。随后清空缓存，重新读取这 16 个 Block 验证数据。
+- **结果**：所有数据读取正确，证明“内存不足时的置换写回”和“缓存未命中时的磁盘重载”逻辑均正常。
+
+```c
+// test-4: cache thrashing
+#include "sys.h"
+
+#define N_BUFFER 8
+#define TEST_COUNT 16 // 2 * N_BUFFER，确保发生大规模置换
+#define BLOCK_BASE 6000
+
+int main()
+{
+    char data[PGSIZE];
+    char read_buf[PGSIZE];
+    unsigned long long buf_ids[TEST_COUNT];
+
+    syscall(SYS_print_str, "Test-4: Cache Thrashing Start\n");
+
+    /* 
+       阶段1: 连续写入 16 个块
+       由于 N_BUFFER=8，写入第 9 个块时，必然会踢出第 1 个块。
+       如果 Buffer Cache 实现了正确的“脏回写”策略，第 1 个块的数据应该被自动保存到磁盘。
+    */
+    syscall(SYS_print_str, "Step 1: Writing 16 blocks (Force Eviction)...\n");
+    for (int i = 0; i < TEST_COUNT; i++) {
+        // 构造标记数据: "Block-A", "Block-B", ...
+        for(int j=0; j<PGSIZE; j++) data[j] = 0;
+        data[0] = 'B'; data[1] = 'l'; data[2] = 'o'; data[3] = 'c'; data[4] = 'k'; data[5] = '-';
+        data[6] = 'A' + i; 
+        
+        buf_ids[i] = syscall(SYS_get_block, BLOCK_BASE + i);
+        syscall(SYS_write_block, buf_ids[i], data);
+        syscall(SYS_put_block, buf_ids[i]); // 引用计数归零，允许被置换
+    }
+
+    /* 
+       阶段2: 彻底清空缓存
+       这会强制剩余的 8 个块也写回磁盘，并释放所有物理页。
+       接下来的读取操作将全部触发 Cache Miss，必须从磁盘读数据。
+    */
+    syscall(SYS_print_str, "Step 2: Flush all buffers.\n");
+    syscall(SYS_flush_buffer, N_BUFFER); 
+
+    /* 
+       阶段3: 验证数据回读
+       检查之前被“踢出”的数据是否真的持久化到了磁盘上。
+    */
+    syscall(SYS_print_str, "Step 3: Verify data reload...\n");
+    int pass = 1;
+    for (int i = 0; i < TEST_COUNT; i++) {
+        unsigned long long bid = syscall(SYS_get_block, BLOCK_BASE + i);
+        syscall(SYS_read_block, bid, read_buf);
+        syscall(SYS_put_block, bid);
+
+        // 验证标记位
+        if (read_buf[6] != 'A' + i) {
+            pass = 0;
+            syscall(SYS_print_str, "Fail at index: ");
+            // 简单的错误提示 (假设没有 printf %d)
+            char c[2] = {'0'+i/10, '0'+i%10}; // 简易 hex/decimal 打印
+            if(i<10) { c[0] = '0'+i; c[1]='\0'; }
+            syscall(SYS_print_str, c); 
+            syscall(SYS_print_str, "\n");
+        }
+    }
+
+    if (pass) {
+        syscall(SYS_print_str, "Test-4 PASSED: All blocks persisted and reloaded.\n");
+    } else {
+        syscall(SYS_print_str, "Test-4 FAILED: Data lost during eviction.\n");
+    }
+
+    while(1);
+}
+```
+
+![alt text](picture/test-4-result.png)
+
+---
+
 ## 实验反思
 
 ### 磁盘与内核解耦
