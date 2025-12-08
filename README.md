@@ -86,11 +86,25 @@ OKOS
 ### 1. 准备工作：从资源视角看进程
 - **为什么先管资源？** 只有把 `proczero` 的“单例模式”拆成 `proc_list` 这种仓库，后面才能谈复制和调度。指导书虽然直接说“引入进程数组”，但我真正卡住的是“共享字段谁来加锁”。
 - **做法**：先把 `proc_init/proc_alloc/proc_free` 写成一个闭环——`proc_alloc` 负责建立 PID、栈、trapframe，顺手把锁状态标好；`proc_make_first` 改成只是调用 `proc_alloc`，避免重复的手工初始化。与此同时，在 `kvm_init` 里把单栈映射展开成多栈，确保后面不会出现“不同进程踩同一页”的阴影。
-- **验证**：test-01 继续保留，只要看到 `cpu 0/1 is booting!` 和 `proczero: hello world!`，就说明资源准备环节没被我新写的代码破坏。这个 baseline 在后面调 trap 和调度器时救了我几次。
+- **验证**：test-01 继续保留，只要看到 `cpu 0/1 is booting!` 和 `proczero: hello world!`，就说明资源准备环节没被我新写的代码破坏。这个 baseline 在后面调 trap 和调度器时多次帮助我debug了。
 
 ### 2. 循环调度：原生进程是“搬运工”
-- **思路来源**：指导书提醒我“原生进程 A 切到用户进程 B 需要两次 swtch”，于是我把 `proc_sched` 理解成一个“搬运工”：负责保存当前 CPU 的上下文，再把控制权交给原生进程。
+- **思路来源**：指导书提醒我“原生进程 A 切到用户进程 B 需要两次 swtch”，于是把 `proc_sched` 理解成一个“搬运工”：负责保存当前 CPU 的上下文，再把控制权交给原生进程。
 - **落地细节**：实现 `proc_scheduler` 时，我刻意把 `cpu->proc` 赋值和 `swtch` 放在一起，避免忘记更新 CPU 上下文。为了能肉眼追踪调度顺序，我加了 `proc %d is running...` 的调度日志，并通过一个宏开关控制噪声，这样 Test-02 调查时能直接看到调度轮转是否符合预期。
+
+```mermaid
+sequenceDiagram
+    participant ProcA as 进程 A
+    participant Sched as 调度器(CPU)
+    participant ProcB as 进程 B
+
+    Note over ProcA: 运行中
+    ProcA->>Sched: swtch(A->context, cpu->context)
+    Note over Sched: 也就是 scheduler() 循环
+    Note over Sched: 找到 RUNNABLE 的进程 B
+    Sched->>ProcB: swtch(cpu->context, B->context)
+    Note over ProcB: 恢复运行
+```
 
 ### 3. 时钟抢占：把“主动权”交还给系统
 - **为什么需要它**：只靠循环扫描无法制约长进程，它们可能永远不调用 `proc_sched`。指导书强调“基于时钟的抢占式调度”，我把它理解成“让外部事件打断当前进程”。
@@ -102,6 +116,21 @@ OKOS
 - **exit/wait 回收**：遵循“自己不能亲自办葬礼”的比喻，`proc_exit` 只负责把自己标成 ZOMBIE，并唤醒父进程；`proc_wait` 通过 `wait_lk` 保护共享字段，避免像 Test-03 那样死锁。我还在父进程退出时把孤儿挂给 `proczero`，防止资源泄漏。
 - **sleep/wakeup**：指导书强调“RUNNABLE 仍然会被白白调度”，于是我给 `proc_sleep/proc_wakeup/proc_try_wakeup` 设计了“资源指针 + 锁”的接口，把“等什么”明确化。这个抽象一旦成立，`sys_sleep`、`timer_wait` 和 Test-04 里的父子 wait 都可以复用。
 - **睡眠锁**：虽然 lab-6 不一定用得到，但我按照指南把 `kernel/lock/sleeplock.c` 补齐，等到文件系统实验就可以直接拿来挡长时间持锁的场景。
+
+```mermaid
+stateDiagram-v2
+    [*] --> UNUSED
+    UNUSED --> USED: proc_alloc
+    USED --> RUNNABLE: fork/init
+    
+    RUNNABLE --> RUNNING: scheduler (swtch)
+    RUNNING --> RUNNABLE: yield/timer
+    RUNNING --> SLEEPING: sleep
+    SLEEPING --> RUNNABLE: wakeup
+    
+    RUNNING --> ZOMBIE: exit
+    ZOMBIE --> UNUSED: wait (reaped)
+```
 
 ### 5. 用户态验证矩阵：把需求转成可视化输出来回归
 - **选择测试的理由**：`initcode.c` 中三套程序分别覆盖“fork 树”“wait + mem”“sleep + wait”。我只要切换一个宏，就能让内核跑不同路径，特别适合频繁回归。
@@ -155,21 +184,7 @@ OKOS
 
 ## 实验反思
 
-### Test-01：baseline 验证
-- **根因**：虽然 test-01 没有显式缺陷，但在多核 bring-up 中非常容易因为中断、串口或 `proc_alloc` 的初始化顺序出错，导致 `proczero` 看似启动却没有产出。通过保留这个测试，我们能在每轮大改前后快速验证“最简单路径”是否依旧成立。
-- **修复心得**：将 `test-01` 纳入自动回归，无论修改 trap、调度或内存模块，都先跑一次 baseline，保证后续问题定位不被基础设施噪音干扰。
-
-### Test-02：栈指针复制缺陷
-- **根因**：对子进程 trapframe 的复制是“按值”操作，`user_to_kern_sp` 这种指针字段被不小心共享。只要子进程触发 trap，就会踩到父栈，引发 page fault。
-- **修复过程**：确定 `child->kstack` 已在 `proc_alloc()` 中分配，于是只需在 `proc_fork()` 完成 `trapframe_copy` 后重写 `user_to_kern_sp`；同时把调度日志临时打开，确认每个 PID 的运行顺序与多叉树期望一致，确保“同栈”问题彻底消除。
-- **收获**：复制结构体时绝不能忽略“指针语义”；今后会在类似函数中列清单校验每个指针成员，减少隐性共享。
-
-### Test-03：wait/sleep 死锁
-- **根因**：父进程在 `proc_wait()` 中拿着 `parent->lk` 进 `proc_sleep()`，而子进程 `proc_exit()` 也必须拿这把锁才能唤醒父进程，导致双方互等；同时 `proc_try_wakeup()` 全局扫描增加了竞态窗口，调试日志又让问题更难定位。
-- **修复过程**：抽象出“父子同步只需要一把专用锁”的原则，引入 `wait_lk` 并在 `proc_wait/proc_exit` 中统一使用；`proc_try_wakeup()` 改成直接拿父进程锁查看 `sleep_space`，彻底避免遍历；最后删掉 `sys_brk/sys_mmap/sys_munmap` 的冗余输出，保证复现结果干净。
-- **收获**：理解了“睡眠时必须持有与唤醒方相同的锁”这条铁律；今后编写同步代码会优先画出锁图，避免把状态锁和同步锁混用。
-
-### Test-04：trap 返回竞态
-- **根因**：在 `trap_user_return()` 中设置 `stvec→user_vector` 与清理 `SSTATUS_SPP` 时没有屏蔽中断；若恰好有时钟中断到来，`kernel_vector` 看到 `SPP=0` 就会以为 trap 来自用户，触发 `kernel trap from user?`，继而因上下文不一致导致 Instruction page fault。
-- **修复过程**：先让输出与 README 对齐，保证“现象可视化”；接着分析 `sstatus` 位含义，确认只需要在写 CSR 前 `intr_off()` 即可避免竞态；函数末尾交给 `sret` 恢复中断。为防止未来回归难，`trap_user_handler()` 还加了 `SPP==0` 断言，第一时间暴露异常路径。
-- **收获**：对 RISC-V `SPP/SPIE`、`intr_off/on` 的语义更扎实；任何涉及 CSR 写序列的代码必须结合硬件时序推敲。也学会了“先用用户可见日志固定预期，再去定位竞态”的调试套路。
+1. **Baseline的重要性**：保留 Test-01 作为基线测试非常关键，能在多核 bring-up 和模块重构时快速验证最简单路径，排除基础设施噪音。
+2. **深浅拷贝的陷阱**：在 `proc_fork` 复制 trapframe 时，必须注意指针成员（如 `user_to_kern_sp`）的深拷贝，避免父子进程共享内核栈指针导致踩踏。
+3. **锁的粒度与死锁**：在 `wait/exit` 同步中，混用进程状态锁容易导致死锁。引入专用的 `wait_lk` 并遵循“睡眠时持有与唤醒方相同的锁”原则，有效解决了死锁问题。
+4. **中断与竞态**：在 `trap_user_return` 等关键路径操作 CSR（如 `stvec`, `sstatus`）时，必须关闭中断以防止时钟中断插入导致的上下文混乱（如 `kernel trap from user` 错误）。
