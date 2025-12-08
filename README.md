@@ -7,6 +7,7 @@
 4. 2025.11.03 张子扬完善测试二、三，完成测试四
 5. 2025.11.10 张子扬完成测试五
 6. 2025.11.10 王俊翔、张子扬完成README编写
+7. 2025.12.08 张子扬增加示意图
 
 
 ## 代码结构
@@ -119,6 +120,17 @@ OKOS
 
 这个任务要给用户进程实现动态内存管理能力，分为两部分：堆的手动管理和栈的自动扩展。
 
+```mermaid
+block-beta
+    columns 1
+    stack["User Stack (Grows Down)"]
+    space1["⬇️ Auto Grow (Page Fault)"]
+    free["Free Space"]
+    space2["⬆️ Manual Grow (sys_brk)"]
+    heap["User Heap"]
+    data["Data / Code"]
+```
+
 ### 堆的手动管理 — sys_brk 系统调用
 
 堆（HEAP）从低地址向高地址增长，用户通过 `sys_brk` 手动管理堆空间。
@@ -205,6 +217,17 @@ sys_brk 的四种行为：
 
 这个任务解决的是如何让用户程序动态申请和释放离散的内存块
 
+```mermaid
+graph LR
+    subgraph Before["合并前"]
+        N1[Node A: 0x1000-0x2000] --> N2[Node B: 0x2000-0x3000]
+        N2 --> N3[Node C: 0x5000-0x6000]
+    end
+    subgraph After["合并后 (A+B)"]
+        M1[Node AB: 0x1000-0x3000] --> M2[Node C: 0x5000-0x6000]
+    end
+```
+
 **解决方案：有序链表 + 自动合并**
 
 1. **sys_mmap(begin, len)** (在 [`sysfunc.c`](src/kernel/syscall/sysfunc.c#L155) 中)
@@ -250,6 +273,17 @@ sys_brk 的四种行为：
 ## 任务5：页表复制与销毁
 
 这个任务的核心问题是：**如何为 fork 系统调用准备页表深拷贝和完整销毁功能？**
+
+```mermaid
+graph TD
+    subgraph Parent["父进程"]
+        PPT[页表] --> PP1[物理页 1]
+    end
+    subgraph Child["子进程 (Deep Copy)"]
+        CPT[新页表] --> CP1[物理页 1' (副本)]
+    end
+    PP1 -.->|memcpy| CP1
+```
 
 **解决方案：逐页复制 + 递归释放！**
 
