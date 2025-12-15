@@ -71,6 +71,9 @@ $(TARGET)/kernel/%.o: $(KernelPath)/%.S
 $(TARGET)/kernel/%.o: $(KernelPath)/%.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+# proc.c 依赖 user/initcode.h（由 $(ELFUser) 生成），否则并行编译会找不到头文件
+$(TARGET)/kernel/proc/proc.o: $(ELFUser)
+
 # 编译规则：将C文件(.c)编译为目标文件(.o)
 $(TARGET)/user/%.o: $(UserPath)/%.c
 	$(CC) $(CFLAGS) -march=rv64g -nostdinc -c -o $@ $<

@@ -22,7 +22,25 @@
 */
 uint32 dentry_search(inode_t *ip, char *name)
 {
+	assert(sleeplock_holding(&ip->slk), "dentry_search: slk!");
+	assert(ip->disk_info.type == INODE_TYPE_DIR, "dentry_search: not dir!");
 
+	if (ip->disk_info.index[0] == 0)
+		return INVALID_INODE_NUM;
+
+	buffer_t *buf = buffer_get(ip->disk_info.index[0]);
+	dentry_t *de;
+	for (de = (dentry_t *)(buf->data); de < (dentry_t *)(buf->data + BLOCK_SIZE); de++) {
+		if (de->name[0] == 0)
+			continue;
+		if (strncmp(de->name, name, MAXLEN_FILENAME) == 0) {
+			uint32 inode_num = de->inode_num;
+			buffer_put(buf);
+			return inode_num;
+		}
+	}
+	buffer_put(buf);
+	return INVALID_INODE_NUM;
 }
 
 /*
@@ -33,7 +51,51 @@ uint32 dentry_search(inode_t *ip, char *name)
 */
 uint32 dentry_create(inode_t *ip, uint32 inode_num, char *name)
 {
+	assert(sleeplock_holding(&ip->slk), "dentry_create: slk!");
+	assert(ip->disk_info.type == INODE_TYPE_DIR, "dentry_create: not dir!");
+	assert(name != NULL && name[0] != 0, "dentry_create: empty name");
 
+	// Directory inode should have exactly one data block.
+	if (ip->disk_info.index[0] == 0)
+		return (uint32)-1;
+
+	buffer_t *buf = buffer_get(ip->disk_info.index[0]);
+	dentry_t *de;
+	dentry_t *empty = NULL;
+
+	for (de = (dentry_t *)(buf->data); de < (dentry_t *)(buf->data + BLOCK_SIZE); de++) {
+		if (de->name[0] == 0) {
+			if (empty == NULL)
+				empty = de;
+			continue;
+		}
+		if (strncmp(de->name, name, MAXLEN_FILENAME) == 0) {
+			buffer_put(buf);
+			return (uint32)-1;
+		}
+	}
+
+	if (empty == NULL) {
+		buffer_put(buf);
+		return (uint32)-1;
+	}
+
+	memset(empty, 0, sizeof(dentry_t));
+	int n = strlen(name);
+	if (n >= MAXLEN_FILENAME)
+		n = MAXLEN_FILENAME - 1;
+	memmove(empty->name, name, n);
+	empty->name[n] = 0;
+	empty->inode_num = inode_num;
+
+	uint32 offset = (uint32)((uint8 *)empty - buf->data);
+	uint32 end = offset + sizeof(dentry_t);
+	if (end > ip->disk_info.size)
+		ip->disk_info.size = end;
+
+	buffer_write(buf);
+	buffer_put(buf);
+	return offset;
 }
 
 /*
@@ -43,7 +105,28 @@ uint32 dentry_create(inode_t *ip, uint32 inode_num, char *name)
 */
 uint32 dentry_delete(inode_t *ip, char *name)
 {
+	assert(sleeplock_holding(&ip->slk), "dentry_delete: slk!");
+	assert(ip->disk_info.type == INODE_TYPE_DIR, "dentry_delete: not dir!");
+	assert(name != NULL && name[0] != 0, "dentry_delete: empty name");
 
+	if (ip->disk_info.index[0] == 0)
+		return INVALID_INODE_NUM;
+
+	buffer_t *buf = buffer_get(ip->disk_info.index[0]);
+	dentry_t *de;
+	for (de = (dentry_t *)(buf->data); de < (dentry_t *)(buf->data + BLOCK_SIZE); de++) {
+		if (de->name[0] == 0)
+			continue;
+		if (strncmp(de->name, name, MAXLEN_FILENAME) == 0) {
+			uint32 inode_num = de->inode_num;
+			memset(de, 0, sizeof(dentry_t));
+			buffer_write(buf);
+			buffer_put(buf);
+			return inode_num;
+		}
+	}
+	buffer_put(buf);
+	return INVALID_INODE_NUM;
 }
 
 /* 输出目录中所有有效目录项的信息 (for debug) */
@@ -123,7 +206,41 @@ static char* get_element(char *path, char *name)
 */
 static inode_t* __path_to_inode(char *path, char *name, bool find_parent_inode)
 {
+	inode_t *ip = inode_get(ROOT_INODE);
+	char elem[MAXLEN_FILENAME];
+	char *p = path;
 
+	while ((p = get_element(p, elem)) != NULL) {
+		if (find_parent_inode && p[0] == 0) {
+			// elem is the last component
+			memmove(name, elem, MAXLEN_FILENAME);
+			return ip;
+		}
+
+		inode_lock(ip);
+		if (ip->disk_info.type != INODE_TYPE_DIR) {
+			inode_unlock(ip);
+			inode_put(ip);
+			return NULL;
+		}
+		uint32 next_inum = dentry_search(ip, elem);
+		inode_unlock(ip);
+		if (next_inum == INVALID_INODE_NUM) {
+			inode_put(ip);
+			return NULL;
+		}
+
+		inode_t *next = inode_get(next_inum);
+		inode_put(ip);
+		ip = next;
+	}
+
+	if (find_parent_inode) {
+		inode_put(ip);
+		name[0] = 0;
+		return NULL;
+	}
+	return ip;
 }
 
 /*

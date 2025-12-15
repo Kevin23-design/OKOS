@@ -66,7 +66,14 @@ void spinlock_acquire(spinlock_t *lk)
 // 释放自旋锁
 void spinlock_release(spinlock_t *lk)
 {
-    assert(spinlock_holding(lk), "release");
+    if (!spinlock_holding(lk)) {
+        // Avoid recursive locking if the failing lock is the printf lock itself.
+        if (lk->name && strncmp(lk->name, "printf", 6) != 0) {
+            printf("spinlock_release: not holding lock=%s locked=%d lkcpuid=%d mycpuid=%d\n",
+                   lk->name, lk->locked, lk->cpuid, mycpuid());
+        }
+        panic("release");
+    }
     
     lk->cpuid = -1;
     
