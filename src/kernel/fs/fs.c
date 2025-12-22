@@ -8,7 +8,7 @@ super_block_t sb; /* 超级块 */
 // Use a simple state machine for one-time initialization.
 static volatile int fs_state = 0; // 0=uninit, 1=initializing, 2=ready
 
-#define FS_TEST_ID 4
+#define FS_TEST_ID 5
 
 /* 基于superblock输出磁盘布局信息 (for debug) */
 static void sb_print()
@@ -329,6 +329,54 @@ void fs_init()
 	intr_off();
 	for (;;)
 		asm volatile("wfi");
+#elif FS_TEST_ID == 5
+	/* 测试5: 持久化测试 (Write -> Drop Cache -> Read) */
+	printf("============= test 5 begin =============\n\n");
+
+	inode_t *ip;
+	char *test_str = "PERSISTENCE_TEST_DATA_1234567890";
+	char buf[100];
+	int len = strlen(test_str);
+
+	/* 1. Create and Write */
+	printf("1. Create file and write data...\n");
+	ip = inode_create(INODE_TYPE_DATA, INODE_MAJOR_DEFAULT, INODE_MINOR_DEFAULT);
+	inode_lock(ip);
+	inode_write_data(ip, 0, len, test_str, false);
+	uint32 inum = ip->inode_num;
+	inode_unlock(ip);
+	inode_put(ip); // Release inode and its buffers (ref counts drop)
+	printf("   Write done. Inode %d released.\n", inum);
+
+	/* 2. Drop Cache */
+	printf("2. Flushing buffer cache...\n");
+	buffer_flush_all();
+	printf("   Cache flushed.\n");
+
+	/* 3. Read back */
+	printf("3. Read back data...\n");
+	ip = inode_get(inum);
+	inode_lock(ip);
+	memset(buf, 0, sizeof(buf));
+	inode_read_data(ip, 0, len, buf, false);
+	printf("   Read data: %s\n", buf);
+
+	if (strncmp(test_str, buf, len) == 0) {
+		printf("   [PASS] Data matches!\n");
+	} else {
+		printf("   [FAIL] Data mismatch! Expected: %s, Got: %s\n", test_str, buf);
+		panic("Persistence test failed");
+	}
+
+	inode_unlock(ip);
+	inode_put(ip);
+
+	printf("============= test 5 end =============\n\n");
+	
+	intr_off();
+	while(1) {
+		asm volatile("wfi");
+	}
 #endif
 }
 

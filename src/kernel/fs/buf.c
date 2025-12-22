@@ -83,6 +83,28 @@ void buffer_write(buffer_t *buf)
 	virtio_disk_rw(buf, true);
 }
 
+/* 
+	Invalidate all buffers in the cache that are not currently in use.
+	This forces subsequent reads to fetch from disk.
+*/
+void buffer_flush_all()
+{
+	buffer_node_t *node;
+	spinlock_acquire(&lk_buf_cache);
+	
+	node = buf_head_active.next;
+	while (node != &buf_head_active) {
+		buffer_node_t *next = node->next;
+		if (node->buf.ref == 0) {
+			node->buf.block_num = BLOCK_NUM_UNUSED;
+			insert_node(node, false, true);
+		}
+		node = next;
+	}
+	
+	spinlock_release(&lk_buf_cache);
+}
+
 /* 从buf_cache中获取一个buf */
 buffer_t* buffer_get(uint32 block_num)
 {
