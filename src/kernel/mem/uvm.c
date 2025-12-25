@@ -374,6 +374,8 @@ void uvm_munmap(uint64 begin, uint32 npages)
 
 /*------------------part-3: 用户空间heap和stack管理相关------------------*/
 
+// '''(TODO, 修改uvm_heap_grow以支持flag的输入)'''
+
 // 用户堆空间增加, 返回新的堆顶地址 (注意栈顶最大值限制)
 uint64 uvm_heap_grow(pgtbl_t pgtbl, uint64 cur_heap_top, uint32 len) 
 {

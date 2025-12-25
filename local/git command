@@ -1,0 +1,5 @@
+git branch -a
+git checkout -b lab-8
+git add . 
+git commit -m "init: lab-9"
+git push --set-upstream origin lab-8

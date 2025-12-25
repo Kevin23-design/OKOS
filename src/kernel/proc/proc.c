@@ -1,3 +1,5 @@
+// (TODO, 增加open_file和cwd的初始化、设置、销毁逻辑)
+
 #include "mod.h"
 #include "../arch/mod.h"
 #include "../mem/mod.h"
