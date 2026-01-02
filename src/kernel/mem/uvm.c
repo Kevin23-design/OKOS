@@ -377,7 +377,7 @@ void uvm_munmap(uint64 begin, uint32 npages)
 // '''(TODO, 修改uvm_heap_grow以支持flag的输入)'''
 
 // 用户堆空间增加, 返回新的堆顶地址 (注意栈顶最大值限制)
-uint64 uvm_heap_grow(pgtbl_t pgtbl, uint64 cur_heap_top, uint32 len) 
+uint64 uvm_heap_grow(pgtbl_t pgtbl, uint64 cur_heap_top, uint32 len, int flag) 
 {
     if (len == 0) return cur_heap_top;
 
@@ -392,6 +392,7 @@ uint64 uvm_heap_grow(pgtbl_t pgtbl, uint64 cur_heap_top, uint32 len)
     uint64 page_start = (cur_heap_top + PGSIZE - 1) & ~(PGSIZE - 1); // 向上取整
     uint64 page_end   = (new_top      + PGSIZE - 1) & ~(PGSIZE - 1); // 向上取整
 
+    int perm = flag | PTE_U;
     for (uint64 va = page_start; va < page_end; va += PGSIZE) {
         void *pa = pmem_alloc(false);
         if (pa == NULL) {
@@ -401,7 +402,7 @@ uint64 uvm_heap_grow(pgtbl_t pgtbl, uint64 cur_heap_top, uint32 len)
             }
             return (uint64)-1;
         }
-        vm_mappages(pgtbl, va, (uint64)pa, PGSIZE, PTE_R | PTE_W | PTE_U);
+        vm_mappages(pgtbl, va, (uint64)pa, PGSIZE, perm);
     }
 
     return new_top;

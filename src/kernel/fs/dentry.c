@@ -1,4 +1,5 @@
 #include "mod.h"
+#include "../mem/method.h"
 
 /*
 	出于简化目的的假设:
@@ -51,7 +52,29 @@ uint32 dentry_search(inode_t *ip, char *name)
 */
 uint32 dentry_search_2(inode_t *ip, uint32 inode_num, char *name)
 {
+	assert(sleeplock_holding(&ip->slk), "dentry_search_2: slk!");
+	assert(ip->disk_info.type == INODE_TYPE_DIR, "dentry_search_2: not dir!");
 
+	if (ip->disk_info.index[0] == 0)
+		return (uint32)-1;
+
+	buffer_t *buf = buffer_get(ip->disk_info.index[0]);
+	dentry_t *de;
+	for (de = (dentry_t *)(buf->data); de < (dentry_t *)(buf->data + BLOCK_SIZE); de++) {
+		if (de->name[0] == 0)
+			continue;
+		if (de->inode_num == inode_num) {
+			int n = strlen(de->name);
+			if (n >= MAXLEN_FILENAME)
+				n = MAXLEN_FILENAME - 1;
+			memmove(name, de->name, n);
+			name[n] = 0;
+			buffer_put(buf);
+			return (uint32)n;
+		}
+	}
+	buffer_put(buf);
+	return (uint32)-1;
 }
 
 /*
@@ -147,7 +170,33 @@ uint32 dentry_delete(inode_t *ip, char *name)
 */
 uint32 dentry_transmit(inode_t *ip, uint64 dst, uint32 len, bool is_user_dst)
 {
+	assert(sleeplock_holding(&ip->slk), "dentry_transmit: slk!");
+	assert(ip->disk_info.type == INODE_TYPE_DIR, "dentry_transmit: not dir!");
 
+	if (ip->disk_info.index[0] == 0)
+		return 0;
+
+	buffer_t *buf = buffer_get(ip->disk_info.index[0]);
+	dentry_t *de;
+	uint32 write_len = 0;
+	proc_t *p = myproc();
+
+	for (de = (dentry_t *)(buf->data); de < (dentry_t *)(buf->data + BLOCK_SIZE); de++) {
+		if (de->name[0] == 0)
+			continue;
+		if (write_len + sizeof(dentry_t) > len)
+			break;
+		if (is_user_dst) {
+			uvm_copyout(p->pgtbl, dst, (uint64)de, sizeof(dentry_t));
+		} else {
+			memmove((void*)dst, de, sizeof(dentry_t));
+		}
+		dst += sizeof(dentry_t);
+		write_len += sizeof(dentry_t);
+	}
+
+	buffer_put(buf);
+	return write_len;
 }
 
 /* 输出目录中所有有效目录项的信息 (for debug) */
@@ -227,7 +276,16 @@ static char* get_element(char *path, char *name)
 */
 static inode_t* __path_to_inode(char *path, char *name, bool find_parent_inode)
 {
-	inode_t *ip = inode_get(ROOT_INODE);
+	inode_t *ip;
+	if (path[0] == '/') {
+		ip = inode_get(ROOT_INODE);
+	} else {
+		proc_t *p = myproc();
+		if (p == NULL || p->cwd == NULL)
+			ip = inode_get(ROOT_INODE);
+		else
+			ip = inode_dup(p->cwd);
+	}
 	char elem[MAXLEN_FILENAME];
 	char *p = path;
 
@@ -290,7 +348,65 @@ inode_t* path_to_parent_inode(char *path, char *name)
 */
 uint32 inode_to_path(inode_t *ip, char *path, uint32 len)
 {
+	if (len == 0)
+		return (uint32)-1;
+	path[len - 1] = 0;
 
+	inode_t *cur = inode_dup(ip);
+	uint32 pos = len - 1;
+	bool first = true;
+
+	while (1) {
+		if (cur->inode_num == ROOT_INODE) {
+			if (pos == 0) {
+				inode_put(cur);
+				return (uint32)-1;
+			}
+			path[--pos] = '/';
+			inode_put(cur);
+			return pos;
+		}
+
+		inode_lock(cur);
+		uint32 parent_inum = dentry_search(cur, "..");
+		inode_unlock(cur);
+		if (parent_inum == INVALID_INODE_NUM) {
+			inode_put(cur);
+			return (uint32)-1;
+		}
+
+		inode_t *parent = inode_get(parent_inum);
+		inode_lock(parent);
+		char name[MAXLEN_FILENAME];
+		uint32 n = dentry_search_2(parent, cur->inode_num, name);
+		inode_unlock(parent);
+		if ((int)n < 0) {
+			inode_put(parent);
+			inode_put(cur);
+			return (uint32)-1;
+		}
+
+		if (!first) {
+			if (pos == 0) {
+				inode_put(parent);
+				inode_put(cur);
+				return (uint32)-1;
+			}
+			path[--pos] = '/';
+		}
+		first = false;
+
+		if (n > pos) {
+			inode_put(parent);
+			inode_put(cur);
+			return (uint32)-1;
+		}
+		pos -= n;
+		memmove(path + pos, name, n);
+
+		inode_put(cur);
+		cur = parent;
+	}
 }
 
 /*
@@ -299,7 +415,50 @@ uint32 inode_to_path(inode_t *ip, char *path, uint32 len)
 */
 inode_t* path_create_inode(char *path, uint16 type, uint16 major, uint16 minor)
 {
+	char name[MAXLEN_FILENAME];
+	inode_t *parent = path_to_parent_inode(path, name);
+	if (parent == NULL)
+		return NULL;
+	if (name[0] == 0) {
+		inode_put(parent);
+		return NULL;
+	}
 
+	inode_t *ip = inode_create(type, major, minor);
+	if (ip == NULL) {
+		inode_put(parent);
+		return NULL;
+	}
+
+	uint32 parent_inum = parent->inode_num;
+	inode_lock(parent);
+	if (dentry_create(parent, ip->inode_num, name) == (uint32)-1) {
+		inode_unlock(parent);
+		inode_lock(ip);
+		ip->disk_info.nlink = 0;
+		inode_unlock(ip);
+		inode_put(ip);
+		inode_put(parent);
+		return NULL;
+	}
+	inode_rw(parent, true);
+	inode_unlock(parent);
+	inode_put(parent);
+
+	if (type == INODE_TYPE_DIR) {
+		inode_lock(ip);
+		if (dentry_create(ip, ip->inode_num, ".") == (uint32)-1 ||
+			dentry_create(ip, parent_inum, "..") == (uint32)-1) {
+			ip->disk_info.nlink = 0;
+			inode_unlock(ip);
+			inode_put(ip);
+			return NULL;
+		}
+		inode_rw(ip, true);
+		inode_unlock(ip);
+	}
+
+	return ip;
 }
 
 /*
@@ -310,7 +469,50 @@ inode_t* path_create_inode(char *path, uint16 type, uint16 major, uint16 minor)
 */
 uint32 path_link(char *old_path, char *new_path)
 {
+	inode_t *old = path_to_inode(old_path);
+	if (old == NULL)
+		return (uint32)-1;
 
+	inode_lock(old);
+	if (old->disk_info.type == INODE_TYPE_DIR) {
+		inode_unlock(old);
+		inode_put(old);
+		return (uint32)-1;
+	}
+	old->disk_info.nlink++;
+	inode_rw(old, true);
+	inode_unlock(old);
+
+	char name[MAXLEN_FILENAME];
+	inode_t *parent = path_to_parent_inode(new_path, name);
+	if (parent == NULL || name[0] == 0) {
+		inode_lock(old);
+		old->disk_info.nlink--;
+		inode_rw(old, true);
+		inode_unlock(old);
+		inode_put(old);
+		if (parent)
+			inode_put(parent);
+		return (uint32)-1;
+	}
+
+	inode_lock(parent);
+	if (dentry_create(parent, old->inode_num, name) == (uint32)-1) {
+		inode_unlock(parent);
+		inode_put(parent);
+		inode_lock(old);
+		old->disk_info.nlink--;
+		inode_rw(old, true);
+		inode_unlock(old);
+		inode_put(old);
+		return (uint32)-1;
+	}
+	inode_rw(parent, true);
+	inode_unlock(parent);
+
+	inode_put(parent);
+	inode_put(old);
+	return 0;
 }
 
 /*
@@ -319,5 +521,47 @@ uint32 path_link(char *old_path, char *new_path)
 */
 uint32 path_unlink(char *path)
 {
+	char name[MAXLEN_FILENAME];
+	inode_t *parent = path_to_parent_inode(path, name);
+	if (parent == NULL || name[0] == 0)
+		return (uint32)-1;
 
+	inode_lock(parent);
+	uint32 inum = dentry_delete(parent, name);
+	inode_rw(parent, true);
+	inode_unlock(parent);
+	if (inum == INVALID_INODE_NUM) {
+		inode_put(parent);
+		return (uint32)-1;
+	}
+
+	inode_t *ip = inode_get(inum);
+	inode_lock(ip);
+	if (ip->disk_info.type == INODE_TYPE_DIR) {
+		if (ip->disk_info.index[0] != 0) {
+			buffer_t *buf = buffer_get(ip->disk_info.index[0]);
+			dentry_t *de;
+			for (de = (dentry_t *)(buf->data); de < (dentry_t *)(buf->data + BLOCK_SIZE); de++) {
+				if (de->name[0] == 0)
+					continue;
+				if (strncmp(de->name, ".", MAXLEN_FILENAME) == 0 ||
+					strncmp(de->name, "..", MAXLEN_FILENAME) == 0)
+					continue;
+				buffer_put(buf);
+				inode_unlock(ip);
+				inode_put(ip);
+				inode_put(parent);
+				return (uint32)-1;
+			}
+			buffer_put(buf);
+		}
+	}
+	if (ip->disk_info.nlink > 0)
+		ip->disk_info.nlink--;
+	inode_rw(ip, true);
+	inode_unlock(ip);
+
+	inode_put(ip);
+	inode_put(parent);
+	return 0;
 }

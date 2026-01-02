@@ -10,13 +10,33 @@ spinlock_t lk_file_table; // 保护它的锁
 /* 初始化file_table */
 void file_init()
 {
-
+	spinlock_init(&lk_file_table, "file_table");
+	for (int i = 0; i < N_FILE; i++) {
+		file_table[i].ip = NULL;
+		file_table[i].readable = false;
+		file_table[i].writbale = false;
+		file_table[i].offset = 0;
+		file_table[i].ref = 0;
+	}
 }
 
 /* 从file_table中获取1个空闲file */
 file_t* file_alloc()
 {
-
+	spinlock_acquire(&lk_file_table);
+	for (int i = 0; i < N_FILE; i++) {
+		if (file_table[i].ref == 0) {
+			file_table[i].ref = 1;
+			file_table[i].ip = NULL;
+			file_table[i].readable = false;
+			file_table[i].writbale = false;
+			file_table[i].offset = 0;
+			spinlock_release(&lk_file_table);
+			return &file_table[i];
+		}
+	}
+	spinlock_release(&lk_file_table);
+	return NULL;
 }
 
 /*
@@ -25,25 +45,120 @@ file_t* file_alloc()
 */
 file_t* file_open(char *path, uint32 open_mode)
 {
+	inode_t *ip = path_to_inode(path);
+	if (ip == NULL) {
+		if (!(open_mode & FILE_OPEN_CREATE))
+			return NULL;
+		ip = path_create_inode(path, INODE_TYPE_DATA, INODE_MAJOR_DEFAULT, INODE_MINOR_DEFAULT);
+		if (ip == NULL)
+			return NULL;
+	}
 
+	inode_lock(ip);
+	if (ip->disk_info.type == INODE_TYPE_DIVICE) {
+		if (!device_open_check(ip->disk_info.major, open_mode)) {
+			inode_unlock(ip);
+			inode_put(ip);
+			return NULL;
+		}
+	}
+	inode_unlock(ip);
+
+	file_t *f = file_alloc();
+	if (f == NULL) {
+		inode_put(ip);
+		return NULL;
+	}
+	f->ip = ip;
+	f->readable = (open_mode & FILE_OPEN_READ) != 0;
+	f->writbale = (open_mode & FILE_OPEN_WRITE) != 0;
+	f->offset = 0;
+	return f;
 }
 
 /* 关闭文件 */
 void file_close(file_t *file)
 {
+	spinlock_acquire(&lk_file_table);
+	if (file->ref == 0)
+		panic("file_close: ref underflow");
+	file->ref--;
+	if (file->ref > 0) {
+		spinlock_release(&lk_file_table);
+		return;
+	}
+	spinlock_release(&lk_file_table);
 
+	if (file->ip)
+		inode_put(file->ip);
+	file->ip = NULL;
+	file->readable = false;
+	file->writbale = false;
+	file->offset = 0;
 }
 
 /* 读取文件内容, 返回读到的字节数量 */
 uint32 file_read(file_t* file, uint32 len, uint64 dst, bool is_user_dst)
 {
+	if (!file->readable)
+		return 0;
+	if (file->ip == NULL)
+		return 0;
 
+	inode_t *ip = file->ip;
+	uint32 ret = 0;
+
+	switch (ip->disk_info.type) {
+	case INODE_TYPE_DATA:
+		inode_lock(ip);
+		ret = inode_read_data(ip, file->offset, len, (void*)dst, is_user_dst);
+		file->offset += ret;
+		inode_unlock(ip);
+		break;
+	case INODE_TYPE_DIR:
+		inode_lock(ip);
+		ret = dentry_transmit(ip, dst, len, is_user_dst);
+		inode_unlock(ip);
+		break;
+	case INODE_TYPE_DIVICE:
+		ret = device_read_data(ip->disk_info.major, len, dst, is_user_dst);
+		break;
+	default:
+		ret = 0;
+		break;
+	}
+	return ret;
 }
 
 /* 读取文件内容, 返回读到的字节数量 */
 uint32 file_write(file_t* file, uint32 len, uint64 src, bool is_user_src)
 {
+	if (!file->writbale)
+		return 0;
+	if (file->ip == NULL)
+		return 0;
 
+	inode_t *ip = file->ip;
+	uint32 ret = 0;
+
+	switch (ip->disk_info.type) {
+	case INODE_TYPE_DATA:
+		inode_lock(ip);
+		ret = inode_write_data(ip, file->offset, len, (void*)src, is_user_src);
+		file->offset += ret;
+		inode_unlock(ip);
+		break;
+	case INODE_TYPE_DIR:
+		ret = 0;
+		break;
+	case INODE_TYPE_DIVICE:
+		ret = device_write_data(ip->disk_info.major, len, src, is_user_src);
+		break;
+	default:
+		ret = 0;
+		break;
+	}
+	return ret;
 }
 
 /* 
@@ -53,26 +168,75 @@ uint32 file_write(file_t* file, uint32 len, uint64 src, bool is_user_src)
 */
 uint32 file_lseek(file_t *file, uint32 lseek_offset, uint32 lseek_flag)
 {
+	if (file->ip == NULL)
+		return (uint32)-1;
 
+	inode_t *ip = file->ip;
+	uint32 new_off = file->offset;
+
+	switch (lseek_flag) {
+	case FILE_LSEEK_SET:
+		new_off = lseek_offset;
+		break;
+	case FILE_LSEEK_ADD:
+		new_off = file->offset + lseek_offset;
+		break;
+	case FILE_LSEEK_SUB:
+		new_off = (file->offset > lseek_offset) ? (file->offset - lseek_offset) : 0;
+		break;
+	default:
+		break;
+	}
+
+	if (ip->disk_info.type != INODE_TYPE_DIVICE) {
+		inode_lock(ip);
+		if (new_off > ip->disk_info.size)
+			new_off = ip->disk_info.size;
+		inode_unlock(ip);
+	}
+
+	file->offset = new_off;
+	return new_off;
 }
 
 /* file->ref++ with lock protect */
 file_t* file_dup(file_t* file)
 {
-
+	spinlock_acquire(&lk_file_table);
+	if (file->ref == 0)
+		panic("file_dup: invalid ref");
+	file->ref++;
+	spinlock_release(&lk_file_table);
+	return file;
 }
 
 /* 获取文件参数, 成功返回0, 失败返回-1 */
 uint32 file_get_stat(file_t* file, uint64 user_dst)
 {
+	if (file->ip == NULL)
+		return (uint32)-1;
 
+	file_stat_t stat;
+	inode_t *ip = file->ip;
+
+	inode_lock(ip);
+	stat.type = ip->disk_info.type;
+	stat.nlink = ip->disk_info.nlink;
+	stat.size = ip->disk_info.size;
+	stat.inode_num = ip->inode_num;
+	inode_unlock(ip);
+	stat.offset = file->offset;
+
+	proc_t *p = myproc();
+	uvm_copyout(p->pgtbl, user_dst, (uint64)&stat, sizeof(stat));
+	return 0;
 }
 
 // fs_init may touch disk and sleep (virtio/buffer), so it must NOT hold a spinlock.
 // Use a simple state machine for one-time initialization.
 static volatile int fs_state = 0; // 0=uninit, 1=initializing, 2=ready
 
-#define FS_TEST_ID 5
+#define FS_TEST_ID 0
 
 /* 基于superblock输出磁盘布局信息 (for debug) */
 static void sb_print()
@@ -117,6 +281,8 @@ void fs_init()
 	fs_read_superblock();
 	sb_print();
 	inode_init();
+	file_init();
+	device_init();
 	__sync_synchronize();
 	fs_state = 2;
 

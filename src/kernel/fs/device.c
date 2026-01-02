@@ -1,4 +1,6 @@
 #include "mod.h"
+#include "../mem/method.h"
+#include "../syscall/type.h"
 
 device_t device_table[N_DEVICE];
 
@@ -103,23 +105,76 @@ static void device_register(uint32 index, char* name,
 /* 初始化device_table */
 void device_init()
 {
+	for (int i = 0; i < N_DEVICE; i++) {
+		memset(device_table[i].name, 0, MAXLEN_FILENAME);
+		device_table[i].read = NULL;
+		device_table[i].write = NULL;
+	}
 
+	device_register(INODE_MAJOR_STDIN,  "stdin",  device_stdin_read, NULL);
+	device_register(INODE_MAJOR_STDOUT, "stdout", NULL, device_stdout_write);
+	device_register(INODE_MAJOR_STDERR, "stderr", NULL, device_stderr_write);
+	device_register(INODE_MAJOR_ZERO,   "zero",   device_zero_read, NULL);
+	device_register(INODE_MAJOR_NULL,   "null",   device_null_read, device_null_write);
+	device_register(INODE_MAJOR_GPT0,   "gpt0",   NULL, device_gpt0_write);
+
+	inode_t *dev_dir = path_to_inode("/dev");
+	if (dev_dir == NULL) {
+		dev_dir = path_create_inode("/dev", INODE_TYPE_DIR, INODE_MAJOR_DEFAULT, INODE_MINOR_DEFAULT);
+	}
+	if (dev_dir) {
+		inode_put(dev_dir);
+	}
+
+	for (int i = 0; i < N_DEVICE; i++) {
+		if (device_table[i].name[0] == 0)
+			continue;
+		char path[MAXLEN_FILENAME + 6];
+		memmove(path, "/dev/", 5);
+		int n = strlen(device_table[i].name);
+		if (n >= MAXLEN_FILENAME)
+			n = MAXLEN_FILENAME - 1;
+		memmove(path + 5, device_table[i].name, n);
+		path[5 + n] = 0;
+		inode_t *ip = path_to_inode(path);
+		if (ip == NULL) {
+			ip = path_create_inode(path, INODE_TYPE_DIVICE, (uint16)i, INODE_MINOR_DEFAULT);
+		}
+		if (ip)
+			inode_put(ip);
+	}
 }
 
 /* 检查文件major字段的合法性 */
 bool device_open_check(uint16 major, uint32 open_mode)
 {
-
+	if (major >= N_DEVICE)
+		return false;
+	if (device_table[major].name[0] == 0)
+		return false;
+	if ((open_mode & FILE_OPEN_READ) && device_table[major].read == NULL)
+		return false;
+	if ((open_mode & FILE_OPEN_WRITE) && device_table[major].write == NULL)
+		return false;
+	return true;
 }
 
 /* 从设备文件中读取数据 */
 uint32 device_read_data(uint16 major, uint32 len, uint64 dst, bool is_user_dst)
 {
-
+	if (major >= N_DEVICE)
+		return 0;
+	if (device_table[major].read == NULL)
+		return 0;
+	return device_table[major].read(len, dst, is_user_dst);
 }
 
 /* 向设备文件写入数据 */
 uint32 device_write_data(uint16 major, uint32 len, uint64 src, bool is_user_src)
 {
-
+	if (major >= N_DEVICE)
+		return 0;
+	if (device_table[major].write == NULL)
+		return 0;
+	return device_table[major].write(len, src, is_user_src);
 }

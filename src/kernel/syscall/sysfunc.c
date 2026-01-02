@@ -25,7 +25,7 @@ uint64 sys_brk()
 
     if (new_top > cur) {
         // 增长
-        uint64 ret = uvm_heap_grow(p->pgtbl, cur, (uint32)(new_top - cur));
+        uint64 ret = uvm_heap_grow(p->pgtbl, cur, (uint32)(new_top - cur), PTE_R | PTE_W);
         if (ret == (uint64)-1) {
             return (uint64)-1;
         }
@@ -347,7 +347,38 @@ static uint32 alloc_fd(file_t *file)
 */
 uint64 sys_exec()
 {
+    char path[STR_MAXLEN + 1];
+    uint64 argv_addr;
+    arg_str(0, path, STR_MAXLEN);
+    arg_uint64(1, &argv_addr);
 
+    char *argv_k[ELF_MAXARGS + 1];
+    for (int i = 0; i < ELF_MAXARGS + 1; i++)
+        argv_k[i] = NULL;
+
+    proc_t *p = myproc();
+    for (int i = 0; i < ELF_MAXARGS; i++) {
+        uint64 uargv = argv_addr + (uint64)i * sizeof(uint64);
+        uint64 uarg;
+        uvm_copyin(p->pgtbl, (uint64)&uarg, uargv, sizeof(uint64));
+        if (uarg == 0) {
+            argv_k[i] = NULL;
+            break;
+        }
+        argv_k[i] = pmem_alloc(true);
+        uvm_copyin_str(p->pgtbl, (uint64)argv_k[i], uarg, ELF_MAXARG_LEN);
+    }
+    argv_k[ELF_MAXARGS] = NULL;
+
+    int ret = proc_exec(path, argv_k);
+
+    for (int i = 0; i < ELF_MAXARGS; i++) {
+        if (argv_k[i] == NULL)
+            break;
+        pmem_free((uint64)argv_k[i], true);
+    }
+
+    return ret;
 }
 
 /*
@@ -358,7 +389,21 @@ uint64 sys_exec()
 */
 uint64 sys_open()
 {
+    char path[STR_MAXLEN + 1];
+    uint32 open_mode;
+    arg_str(0, path, STR_MAXLEN);
+    arg_uint32(1, &open_mode);
 
+    file_t *file = file_open(path, open_mode);
+    if (file == NULL)
+        return (uint64)-1;
+
+    uint32 fd = alloc_fd(file);
+    if (fd == (uint32)-1) {
+        file_close(file);
+        return (uint64)-1;
+    }
+    return fd;
 }
 
 /*
@@ -368,7 +413,13 @@ uint64 sys_open()
 */
 uint64 sys_close()
 {
-
+    uint32 fd;
+    file_t *file;
+    if (arg_fd(0, &fd, &file) < 0)
+        return (uint64)-1;
+    myproc()->open_file[fd] = NULL;
+    file_close(file);
+    return 0;
 }
 
 /*
@@ -380,7 +431,14 @@ uint64 sys_close()
 */
 uint64 sys_read()
 {
-
+    file_t *file;
+    uint32 len;
+    uint64 addr;
+    if (arg_fd(0, NULL, &file) < 0)
+        return 0;
+    arg_uint32(1, &len);
+    arg_uint64(2, &addr);
+    return file_read(file, len, addr, true);
 }
 
 /*
@@ -392,7 +450,14 @@ uint64 sys_read()
 */
 uint64 sys_write()
 {
-
+    file_t *file;
+    uint32 len;
+    uint64 addr;
+    if (arg_fd(0, NULL, &file) < 0)
+        return 0;
+    arg_uint32(1, &len);
+    arg_uint64(2, &addr);
+    return file_write(file, len, addr, true);
 }
 
 /*
@@ -404,7 +469,14 @@ uint64 sys_write()
 */
 uint64 sys_lseek()
 {
-
+    file_t *file;
+    uint32 offset;
+    uint32 flag;
+    if (arg_fd(0, NULL, &file) < 0)
+        return (uint64)-1;
+    arg_uint32(1, &offset);
+    arg_uint32(2, &flag);
+    return file_lseek(file, offset, flag);
 }
 
 /*
@@ -414,7 +486,17 @@ uint64 sys_lseek()
 */
 uint64 sys_dup()
 {
-
+    uint32 fd;
+    file_t *file;
+    if (arg_fd(0, &fd, &file) < 0)
+        return (uint64)-1;
+    file_t *newf = file_dup(file);
+    uint32 new_fd = alloc_fd(newf);
+    if (new_fd == (uint32)-1) {
+        file_close(newf);
+        return (uint64)-1;
+    }
+    return new_fd;
 }
 
 /*
@@ -425,7 +507,12 @@ uint64 sys_dup()
 */
 uint64 sys_fstat()
 {
-
+    file_t *file;
+    uint64 addr;
+    if (arg_fd(0, NULL, &file) < 0)
+        return (uint64)-1;
+    arg_uint64(1, &addr);
+    return file_get_stat(file, addr);
 }
 
 /*
@@ -437,7 +524,14 @@ uint64 sys_fstat()
 */
 uint64 sys_get_dentries()
 {
-
+    file_t *file;
+    uint64 addr;
+    uint32 buffer_len;
+    if (arg_fd(0, NULL, &file) < 0)
+        return (uint64)-1;
+    arg_uint64(1, &addr);
+    arg_uint32(2, &buffer_len);
+    return file_read(file, buffer_len, addr, true);
 }
 
 /*
@@ -447,7 +541,13 @@ uint64 sys_get_dentries()
 */
 uint64 sys_mkdir()
 {
-
+    char path[STR_MAXLEN + 1];
+    arg_str(0, path, STR_MAXLEN);
+    inode_t *ip = path_create_inode(path, INODE_TYPE_DIR, INODE_MAJOR_DEFAULT, INODE_MINOR_DEFAULT);
+    if (ip == NULL)
+        return (uint64)-1;
+    inode_put(ip);
+    return 0;
 }
 
 /*
@@ -457,7 +557,24 @@ uint64 sys_mkdir()
 */
 uint64 sys_chdir()
 {
+    char path[STR_MAXLEN + 1];
+    arg_str(0, path, STR_MAXLEN);
+    inode_t *ip = path_to_inode(path);
+    if (ip == NULL)
+        return (uint64)-1;
+    inode_lock(ip);
+    if (ip->disk_info.type != INODE_TYPE_DIR) {
+        inode_unlock(ip);
+        inode_put(ip);
+        return (uint64)-1;
+    }
+    inode_unlock(ip);
 
+    proc_t *p = myproc();
+    if (p->cwd != NULL)
+        inode_put(p->cwd);
+    p->cwd = ip;
+    return 0;
 }
 
 /*
@@ -466,7 +583,15 @@ uint64 sys_chdir()
 */
 uint64 sys_print_cwd()
 {
-
+    proc_t *p = myproc();
+    if (p->cwd == NULL)
+        return (uint64)-1;
+    char path[STR_MAXLEN + 1];
+    uint32 off = inode_to_path(p->cwd, path, sizeof(path));
+    if ((int)off < 0)
+        return (uint64)-1;
+    printf("%s\n", path + off);
+    return 0;
 }
 
 /*
@@ -477,7 +602,11 @@ uint64 sys_print_cwd()
 */
 uint64 sys_link()
 {
-
+    char old_path[STR_MAXLEN + 1];
+    char new_path[STR_MAXLEN + 1];
+    arg_str(0, old_path, STR_MAXLEN);
+    arg_str(1, new_path, STR_MAXLEN);
+    return path_link(old_path, new_path);
 }
 
 /*
@@ -487,5 +616,7 @@ uint64 sys_link()
 */
 uint64 sys_unlink()
 {
-
+    char path[STR_MAXLEN + 1];
+    arg_str(0, path, STR_MAXLEN);
+    return path_unlink(path);
 }

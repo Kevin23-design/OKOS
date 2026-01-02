@@ -52,9 +52,19 @@ static uint64 prepare_heap(pgtbl_t new_pgtbl, inode_t *ip, elf_header_t *eh)
 		if (ph.va % PGSIZE != 0)
 			return -1;
 		
+		int perm = 0;
+		if (ph.flags & ELF_PROG_FLAG_READ)
+			perm |= PTE_R;
+		if (ph.flags & ELF_PROG_FLAG_WRITE)
+			perm |= PTE_W;
+		if (ph.flags & ELF_PROG_FLAG_EXEC)
+			perm |= PTE_X;
+		if (perm == 0)
+			perm = PTE_R;
+
 		// 用户堆生长
 		new_heap_top = uvm_heap_grow(new_pgtbl, old_heap_top,
-						ph.va + ph.mem_size - old_heap_top, PTE_R | PTE_X);
+						ph.va + ph.mem_size - old_heap_top, perm);
 		if (new_heap_top != ph.va + ph.mem_size)
 			return -1;
 		old_heap_top = new_heap_top;
@@ -112,5 +122,86 @@ static uint64 prepare_stack(pgtbl_t new_pgtbl, char **argv, int *arg_count)
 */
 int proc_exec(char *path, char **argv)
 {
-	
+	proc_t *p = myproc();
+	if (p == NULL)
+		return -1;
+
+	pgtbl_t new_pgtbl = proc_pgtbl_init((uint64)p->tf);
+	if (new_pgtbl == NULL)
+		return -1;
+
+	inode_t *ip = path_to_inode(path);
+	if (ip == NULL) {
+		uvm_destroy_pgtbl(new_pgtbl);
+		return -1;
+	}
+
+	inode_lock(ip);
+	elf_header_t eh;
+	if (inode_read_data(ip, 0, sizeof(eh), &eh, false) != sizeof(eh)) {
+		inode_unlock(ip);
+		inode_put(ip);
+		uvm_destroy_pgtbl(new_pgtbl);
+		return -1;
+	}
+	if (eh.magic != ELF_MAGIC) {
+		inode_unlock(ip);
+		inode_put(ip);
+		uvm_destroy_pgtbl(new_pgtbl);
+		return -1;
+	}
+
+	uint64 new_heap_top = prepare_heap(new_pgtbl, ip, &eh);
+	if (new_heap_top == (uint64)-1) {
+		inode_unlock(ip);
+		inode_put(ip);
+		uvm_destroy_pgtbl(new_pgtbl);
+		return -1;
+	}
+
+	inode_unlock(ip);
+	inode_put(ip);
+
+	int argc = 0;
+	uint64 sp = prepare_stack(new_pgtbl, argv, &argc);
+	if (sp == (uint64)-1) {
+		uvm_destroy_pgtbl(new_pgtbl);
+		return -1;
+	}
+
+	pgtbl_t old_pgtbl = p->pgtbl;
+	uint64 old_heap_top = p->heap_top;
+	uint64 old_ustack_npage = p->ustack_npage;
+	mmap_region_t *old_mmap = p->mmap;
+
+	p->pgtbl = new_pgtbl;
+	p->heap_top = new_heap_top;
+	p->ustack_npage = 1;
+	p->mmap = NULL;
+
+	p->tf->a0 = argc;
+	p->tf->a1 = sp;
+	p->tf->user_to_kern_epc = eh.entry;
+	p->tf->sp = sp;
+
+	int i;
+	for (i = 0; i < PROC_NAME_LEN - 1 && path[i] != 0; i++)
+		p->name[i] = path[i];
+	p->name[i] = 0;
+
+	if (old_mmap != NULL) {
+		mmap_region_t *tmp = old_mmap;
+		while (tmp != NULL) {
+			mmap_region_t *next = tmp->next;
+			mmap_region_free(tmp);
+			tmp = next;
+		}
+	}
+	if (old_pgtbl != NULL) {
+		uvm_destroy_pgtbl(old_pgtbl);
+	}
+
+	(void)old_heap_top;
+	(void)old_ustack_npage;
+	return argc;
 }

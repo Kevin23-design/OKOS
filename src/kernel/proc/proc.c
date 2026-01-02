@@ -50,6 +50,15 @@ static void proc_return()
 {
     spinlock_release(&myproc()->lk);
     fs_init();
+    proc_t *p = myproc();
+    if (p == proczero && p->cwd == NULL) {
+        p->cwd = inode_get(ROOT_INODE);
+        for (int i = 0; i < N_OPEN_FILE_PER_PROC; i++)
+            p->open_file[i] = NULL;
+        p->open_file[0] = file_open("/dev/stdin", FILE_OPEN_READ);
+        p->open_file[1] = file_open("/dev/stdout", FILE_OPEN_WRITE);
+        p->open_file[2] = file_open("/dev/stderr", FILE_OPEN_WRITE);
+    }
     trap_user_return();
 }
 
@@ -75,6 +84,9 @@ void proc_init()
         proc_list[i].mmap = NULL;
         proc_list[i].tf = NULL;
         proc_list[i].kstack = 0;
+        proc_list[i].cwd = NULL;
+        for (int j = 0; j < N_OPEN_FILE_PER_PROC; j++)
+            proc_list[i].open_file[j] = NULL;
         memset(proc_list[i].name, 0, sizeof(proc_list[i].name));
         memset(&proc_list[i].ctx, 0, sizeof(proc_list[i].ctx));
     }
@@ -131,6 +143,9 @@ proc_t *proc_alloc()
     p->heap_top = 0;
     p->ustack_npage = 0;
     p->mmap = NULL;
+    p->cwd = NULL;
+    for (int i = 0; i < N_OPEN_FILE_PER_PROC; i++)
+        p->open_file[i] = NULL;
     memset(p->name, 0, sizeof(p->name));
     
     // 计算进程在数组中的索引，设置内核栈
@@ -195,6 +210,17 @@ void proc_free(proc_t *p)
         // 释放页表本身占用的物理页
         pmem_free((uint64)p->pgtbl, true);
         p->pgtbl = NULL;
+    }
+
+    for (int i = 0; i < N_OPEN_FILE_PER_PROC; i++) {
+        if (p->open_file[i] != NULL) {
+            file_close(p->open_file[i]);
+            p->open_file[i] = NULL;
+        }
+    }
+    if (p->cwd != NULL) {
+        inode_put(p->cwd);
+        p->cwd = NULL;
     }
     
     // 清空其他字段
@@ -320,6 +346,13 @@ int proc_fork()
     // 3. 复制父进程的其他字段
     child->heap_top = parent->heap_top;
     child->ustack_npage = parent->ustack_npage;
+    child->cwd = (parent->cwd != NULL) ? inode_dup(parent->cwd) : NULL;
+    for (int i = 0; i < N_OPEN_FILE_PER_PROC; i++) {
+        if (parent->open_file[i] != NULL)
+            child->open_file[i] = file_dup(parent->open_file[i]);
+        else
+            child->open_file[i] = NULL;
+    }
     
     // 复制mmap链表
     child->mmap = NULL;
@@ -403,7 +436,6 @@ static void proc_try_wakeup(proc_t *p)
     spinlock_acquire(&parent->lk);
     if (parent->state == SLEEPING && parent->sleep_space == parent) {
         parent->state = RUNNABLE;
-        printf("proc %d is wakeup!\n", parent->pid);
     }
     spinlock_release(&parent->lk);
 }
@@ -503,8 +535,6 @@ int proc_wait(uint64 user_addr)
                     int pid = p->pid;
                     int exit_code = p->exit_code;
                     
-                    printf("proc %d is wakeup!\n", parent->pid);
-
                     // 如果user_addr不为0,将退出状态传出到用户空间
                     if (user_addr != 0) {
                         uvm_copyout(parent->pgtbl, user_addr, 
