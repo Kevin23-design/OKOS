@@ -3,6 +3,7 @@
 ## 过程日志
 1. 2025.12.25 更新lab-9文件
 2. 2025.1.2 王俊翔完成lab-9实验，初步攥写报告
+3. 2025.1.3 张子扬设计测试样例，优化实验报告
 
 ## 代码组织结构
 
@@ -41,9 +42,9 @@ ECNU-OSLAB-2025-TASK
     │   │   ├── mod.h
     │   │   └── type.h (CHANGE)
     │   ├── mem    内存模块
-    │   │   ├── pmem.c (TODO, 增加函数pmem_stat用于获取剩余页面数量信息)
+    │   │   ├── pmem.c (DONE, 增加函数pmem_stat用于获取剩余页面数量信息)
     │   │   ├── kvm.c
-    │   │   ├── uvm.c (TODO, 修改uvm_heap_grow以支持flag的输入)
+    │   │   ├── uvm.c (DONE, 修改uvm_heap_grow以支持flag的输入)
     │   │   ├── mmap.c
     │   │   ├── method.h (CHANGE)
     │   │   ├── mod.h
@@ -59,25 +60,25 @@ ECNU-OSLAB-2025-TASK
     │   │   ├── mod.h
     │   │   └── type.h
     │   ├── proc   进程模块
-    │   │   ├── proc.c (TODO, 增加open_file和cwd的初始化、设置、销毁逻辑)
-    │   │   ├── exec.c (TODO, 操作ELF文件以填充新的进程)
+    │   │   ├── proc.c (DONE, 增加open_file和cwd的初始化、设置、销毁逻辑)
+    │   │   ├── exec.c (DONE, 操作ELF文件以填充新的进程)
     │   │   ├── swtch.S
     │   │   ├── method.h (CHANGE)
     │   │   ├── mod.h
     │   │   └── type.h (CHANGE)
     │   ├── syscall 系统调用模块
-    │   │   ├── syscall.c (TODO, 新的系统调用)
-    │   │   ├── sysfunc.c (TODO, 新的系统调用)
-    │   │   ├── method.h (TODO, 新的系统调用)
+    │   │   ├── syscall.c (DONE, 新的系统调用)
+    │   │   ├── sysfunc.c (DONE, 新的系统调用)
+    │   │   ├── method.h (DONE, 新的系统调用)
     │   │   ├── mod.h
-    │   │   └── type.h (TODO, 新的系统调用)
+    │   │   └── type.h (DONE, 新的系统调用)
     │   ├── fs     文件系统模块
     │   │   ├── bitmap.c
     │   │   ├── buffer.c
     │   │   ├── inode.c
-    │   │   ├── device.c (TODO, 增加设备文件操作逻辑)
-    │   │   ├── dentry.c (TODO, 增加目录和路径的功能)
-    │   │   ├── fs.c (TODO, 增加文件操作逻辑)
+    │   │   ├── device.c (DONE, 增加设备文件操作逻辑)
+    │   │   ├── dentry.c (DONE, 增加目录和路径的功能)
+    │   │   ├── fs.c (DONE, 增加文件操作逻辑)
     │   │   ├── virtio.c
     │   │   ├── method.h (CHANGE)
     │   │   ├── mod.h
@@ -297,6 +298,15 @@ flowchart TD
 - `gpt0` 对固定问题返回固定回答，说明设备写回调分发正确。  
 - A3 的剩余页数是动态值，受缓存与分配时机影响；报告中以截图数值为准。  
 结论：设备文件读写通路完整，设备抽象正确落入文件系统体系。
+
+### 测试5
+![alt text](picture/测试5.png)  
+验证硬链接生命周期与 nlink 变化。  
+关键现象：
+- 基文件写入后创建两个硬链接，`fstat` 观察到 `nlink` 从 1 依次升至 3。  
+- 通过两个不同路径读取数据一致，说明多路径共享同一 inode 数据。  
+- 依次 `unlink` 链接与基文件，`nlink` 递减至 1 后再删除最后一个链接，文件不可再打开。  
+结论：硬链接计数维护、相对路径解析以及删除后的资源释放逻辑正确。
 
 ---  
 
